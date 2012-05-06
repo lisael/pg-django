@@ -4,20 +4,23 @@ from bisect import bisect
 from django.conf import settings
 from django.db.models.related import RelatedObject
 from django.db.models.fields.related import ManyToManyRel
-from django.db.models.fields import AutoField, FieldDoesNotExist
+from django.db.models.fields import (AutoField, SharedAutoField,
+                                     FieldDoesNotExist, FieldError)
 from django.db.models.fields.proxy import OrderWrt
 from django.db.models.loading import get_models, app_cache_ready
 from django.utils.translation import activate, deactivate_all, get_language, string_concat
-from django.utils.encoding import force_unicode, smart_str
+from django.utils.encoding import force_unicode, smart_str, int32hash
 from django.utils.datastructures import SortedDict
 
 # Calculate the verbose_name by converting from InitialCaps to "lowercase with spaces".
 get_verbose_name = lambda class_name: re.sub('(((?<=[a-z])[A-Z])|([A-Z](?![A-Z]|$)))', ' \\1', class_name).lower().strip()
 
 DEFAULT_NAMES = ('verbose_name', 'verbose_name_plural', 'db_table', 'ordering',
-                 'unique_together', 'permissions', 'get_latest_by',
-                 'order_with_respect_to', 'app_label', 'db_tablespace',
-                 'abstract', 'managed', 'proxy', 'auto_created')
+                'unique_together', 'permissions', 'get_latest_by',
+                'order_with_respect_to', 'app_label', 'db_tablespace',
+                'abstract', 'managed', 'proxy', 'auto_created',
+                'db_view', 'materialized_view')
+
 
 class Options(object):
     def __init__(self, meta, app_label=None):
@@ -53,6 +56,9 @@ class Options(object):
         self.parents = SortedDict()
         self.duplicate_targets = {}
         self.auto_created = False
+        self.materialized_view = False
+        self.db_view = False
+        self.leaf = False
 
         # To handle various inheritance situations, we need to track where
         # managers came from (concrete or abstract base classes).
@@ -122,8 +128,55 @@ class Options(object):
         else:
             self.order_with_respect_to = None
 
-        if self.pk is None:
-            if self.parents:
+        if self.leaf:
+            self.leaf_id = int32hash('%s%s%s' % (
+                self.proxy and self.app_label or '',
+                self.proxy and self.object_name or '',
+                self.db_table))
+
+        if self.pk is not None:
+            if self.materialized_view and not isinstance(self.pk,
+                                                         SharedAutoField):
+                raise FieldError('Materialized views primary key must be '\
+                                'a django.db.models.field.SharedAutoField. '\
+                                'Why don\'t you let django create `id` for '\
+                                'you?')
+
+            if self.leaf:
+                if not isinstance(self.pk, SharedAutoField):
+                    raise FieldError('Primary key must be '\
+                                'a django.db.models.field.SharedAutoField. '\
+                                'Why don\'t you just inherit the primary '\
+                                'key from the parent materialized view?')
+                vpk = self.mat_view_base.pk
+                if ((self.pk.column != vpk.column) or
+                    (self.pk.sequence != vpk.sequence)):
+                    raise FieldError('Primary key must have the same '\
+                                'column name and the same sequence as '\
+                                'model\'s parent materialized view.'
+                                'Why don\'t you just inherit the primary '\
+                                'key from the parent materialized view?')
+
+        else:
+            if self.materialized_view:
+                # the sequence name is set latter in ModelBase.__new__
+                auto = SharedAutoField(verbose_name='ID', primary_key=True,
+                        auto_created=True)
+                model.add_to_class('id', auto)
+                auto.acquired = True
+
+            elif self.leaf:
+                # create the same SharedAutoField as the mat. view
+                vpk = self.mat_view_base._meta.pk
+                auto = SharedAutoField(verbose_name=vpk.verbose_name,
+                                       sequence = vpk.sequence,
+                                       db_column = vpk.column,
+                                       primary_key=True,
+                                       auto_created=True)
+                auto.acquired = True
+                model.add_to_class(vpk.name, auto)
+
+            elif self.parents:
                 # Promote the first parent link in lieu of adding yet another
                 # field.
                 field = self.parents.value_for_index(0)

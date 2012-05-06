@@ -172,12 +172,13 @@ class AppCache(object):
         By default, models created to satisfy deferred attribute
         queries are *not* included in the list of models. However, if
         you specify include_deferred, they will be.
+
+        Modified in pg_django to order the results. The order must be:
+        concrete models, materialized_view bases, view bases.
         """
         cache_key = (app_mod, include_auto_created, include_deferred, only_installed)
-        try:
+        if cache_key in self._get_models_cache:
             return self._get_models_cache[cache_key]
-        except KeyError:
-            pass
         self._populate()
         if app_mod:
             if app_mod in self.app_store:
@@ -192,12 +193,24 @@ class AppCache(object):
             else:
                 app_list = self.app_models.itervalues()
         model_list = []
+
+        ################ pg-django >>>>>
+        mat_views = []
+        views = []
         for app in app_list:
-            model_list.extend(
-                model for model in app.values()
+            for model in app.values():
+                if model._meta.materialized_view:
+                    mat_views.append(model)
+                    continue
+                if model._meta.db_view:
+                    views.append(model)
+                    continue
                 if ((not model._deferred or include_deferred) and
-                    (not model._meta.auto_created or include_auto_created))
-            )
+                    (not model._meta.auto_created or include_auto_created)):
+                    model_list.append(model)
+        model_list = model_list + mat_views + views
+        ################ <<<<<< pg-django
+
         self._get_models_cache[cache_key] = model_list
         return model_list
 

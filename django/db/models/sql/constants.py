@@ -4,7 +4,8 @@ import re
 QUERY_TERMS = dict([(x, None) for x in (
     'exact', 'iexact', 'contains', 'icontains', 'gt', 'gte', 'lt', 'lte', 'in',
     'startswith', 'istartswith', 'endswith', 'iendswith', 'range', 'year',
-    'month', 'day', 'week_day', 'isnull', 'search', 'regex', 'iregex',
+    'month', 'day', 'week_day', 'isnull', 'search', 'regex', 'iregex','has_one',
+    'has_all', 'has'
     )])
 
 # Size of each "chunk" for get_iterator calls.

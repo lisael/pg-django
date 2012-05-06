@@ -23,6 +23,7 @@ def load_backend(backend_name):
     try:
         return import_module('.base', backend_name)
     except ImportError, e_user:
+        raise
         # The database backend wasn't found. Display a helpful error message
         # listing all possible (built-in) database backends.
         backend_dir = os.path.join(os.path.dirname(__file__), 'backends')

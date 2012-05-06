@@ -8,7 +8,7 @@ from django.conf import settings
 from django.core.exceptions import (ObjectDoesNotExist,
     MultipleObjectsReturned, FieldError, ValidationError, NON_FIELD_ERRORS)
 from django.core import validators
-from django.db.models.fields import AutoField, FieldDoesNotExist
+from django.db.models.fields import AutoField, IntegerField, FieldDoesNotExist
 from django.db.models.fields.related import (ManyToOneRel,
     OneToOneField, add_lazy_relation)
 from django.db import (connections, router, transaction, DatabaseError,
@@ -41,6 +41,10 @@ class ModelBase(type):
         new_class = super_new(cls, name, bases, {'__module__': module})
         attr_meta = attrs.pop('Meta', None)
         abstract = getattr(attr_meta, 'abstract', False)
+        mat_view = getattr(attr_meta, 'materialized_view', False)
+        leaf = False
+        if mat_view and abstract:
+            raise TypeError("A model cannot be 'abstract' and 'materialized_view' at the same time.")
         if not attr_meta:
             meta = getattr(new_class, 'Meta', None)
         else:
@@ -65,14 +69,22 @@ class ModelBase(type):
                     tuple(x.MultipleObjectsReturned
                             for x in parents if hasattr(x, '_meta') and not x._meta.abstract)
                                     or (MultipleObjectsReturned,), module))
-            if base_meta and not base_meta.abstract:
-                # Non-abstract child classes inherit some attributes from their
-                # non-abstract parent (unless an ABC comes before it in the
-                # method resolution order).
-                if not hasattr(meta, 'ordering'):
-                    new_class._meta.ordering = base_meta.ordering
-                if not hasattr(meta, 'get_latest_by'):
-                    new_class._meta.get_latest_by = base_meta.get_latest_by
+            if base_meta:
+                if base_meta.abstract:
+                    # Non-abstract child classes inherit some attributes from their
+                    # non-abstract parent (unless an ABC comes before it in the
+                    # method resolution order).
+                    if not hasattr(meta, 'ordering'):
+                        new_class._meta.ordering = base_meta.ordering
+                    if not hasattr(meta, 'get_latest_by'):
+                        new_class._meta.get_latest_by = base_meta.get_latest_by
+                if base_meta.materialized_view:
+                    if mat_view :
+                        raise TypeError('A materialized view cannot inherit from another')
+                    new_class._meta.leaf = True
+                    leaf = True
+                    # register the materialized_view base
+                    new_class._meta.mat_view_base = base_meta.concrete_model
 
         is_proxy = new_class._meta.proxy
 
@@ -97,6 +109,18 @@ class ModelBase(type):
         # Add all attributes to the class.
         for obj_name, obj in attrs.items():
             new_class.add_to_class(obj_name, obj)
+
+        if mat_view:
+            # add a pgd_child_type field to identify the model of each view row
+            if 'pgd_child_type' in attrs:
+                # pfff... bloody clever users... It's 2:06 AM now, I won't fix it
+                pass
+            ctype_field = IntegerField(db_index=True)
+            ctype_field.acquired = True
+            new_class.add_to_class('pgd_child_type', ctype_field)
+            # add caches of the children
+            new_class._meta.leaf_ids = {}
+            new_class._meta.leaves = {}
 
         # All the fields of any type declared on this model
         new_fields = new_class._meta.local_fields + \
@@ -131,6 +155,28 @@ class ModelBase(type):
         o2o_map = dict([(f.rel.to, f) for f in new_class._meta.local_fields
                 if isinstance(f, OneToOneField)])
 
+        if leaf:
+            # Add all child fields on the base parent and mark them inherited
+            child_fields = new_class._meta.local_fields + new_class._meta.local_many_to_many
+            inserted = False
+            mat_view_base = new_class._meta.mat_view_base
+            for field in child_fields:
+                if not getattr(field, 'acquired', False):
+                    inserted = True
+                    parent_field = copy.deepcopy(field)
+                    parent_field.acquired = True
+                    mat_view_base.add_to_class(field.name, parent_field)
+            if inserted:
+                # move pgd_child_type at last position on the parent
+                ctype_field = mat_view_base._meta.get_field_by_name('pgd_child_type')[0]
+                mat_view_base._meta.local_fields.remove(ctype_field)
+                mat_view_base._meta.local_fields.append(ctype_field)
+                if hasattr(mat_view_base._meta, '_field_cache'):
+                    del mat_view_base._meta._field_cache
+                    del mat_view_base._meta._field_name_cache
+                if hasattr(mat_view_base._meta, '_name_map'):
+                    del mat_view_base._meta._name_map
+
         for base in parents:
             original_base = base
             if not hasattr(base, '_meta'):
@@ -141,13 +187,14 @@ class ModelBase(type):
             parent_fields = base._meta.local_fields + base._meta.local_many_to_many
             # Check for clashes between locally declared fields and those
             # on the base classes (we cannot handle shadowed fields at the
-            # moment).
-            for field in parent_fields:
-                if field.name in field_names:
-                    raise FieldError('Local field %r in class %r clashes '
-                                     'with field of similar name from '
-                                     'base class %r' %
-                                        (field.name, name, base.__name__))
+            # moment, except in mat. view inheritance).
+            if not leaf:
+                for field in parent_fields:
+                    if field.name in field_names:
+                        raise FieldError('Local field %r in class %r clashes '
+                                        'with field of similar name from '
+                                        'base class %r' %
+                                            (field.name, name, base.__name__))
             if not base._meta.abstract:
                 # Concrete classes...
                 base = base._meta.concrete_model
@@ -164,7 +211,8 @@ class ModelBase(type):
             else:
                 # .. and abstract ones.
                 for field in parent_fields:
-                    new_class.add_to_class(field.name, copy.deepcopy(field))
+                    if not getattr(field, 'acquired', False):
+                        new_class.add_to_class(field.name, copy.deepcopy(field))
 
                 # Pass any non-abstract parent classes onto child.
                 new_class._meta.parents.update(base._meta.parents)
@@ -196,14 +244,91 @@ class ModelBase(type):
             return new_class
 
         new_class._prepare()
+
+        if mat_view:
+            # now I know the table name, I can set the sequence name
+            tname = new_class._meta.db_table
+            new_class._meta.pk.sequence = tname + '_id_seq'
+
         register_models(new_class._meta.app_label, new_class)
 
         # Because of the way imports happen (recursively), we may or may not be
         # the first time this model tries to register with the framework. There
         # should only be one class for each model, so we always return the
         # registered version.
-        return get_model(new_class._meta.app_label, name,
+        new_class = get_model(new_class._meta.app_label, name,
                          seed_cache=False, only_installed=False)
+
+        if mat_view:
+            # turn it into an abstract model, so children won't try to create
+            # joins
+            new_class._meta.abstract = True
+
+            # Now, we override new_class.__new__ on
+            # materialized views to choose the class of the new object returned
+            # when the user (or a QuerySet) tries to instanciate it.
+            # It is chosen amongst leaves
+            def new_matview_new(klass,*args,**kwargs):
+                # children classes are not patched
+                if not klass._meta.materialized_view:
+                    return Model.__new__(klass, *args, **kwargs)
+                parent_fnames = [f.name for f in klass._meta.fields]
+                idx = parent_fnames.index('pgd_child_type')
+                if args[idx] == None and 'pgd_child_type' not in kwargs:
+                    # instancied without a ctype... Yet again a clever user
+                    # anyway, let him go, if he wants to shoot himself
+                    # he won't be able to save a base instances
+                    return Model.__new__(klass,*args,**kwargs)
+                print '##### new #####'
+                print args
+                print kwargs
+                # Here is the magic: if you try to instanciate a m10d view
+                # you get its subbclass corresponding to its pgd_child_type
+                # That how mixed queryset work.
+                # pgd_child_type should be the last field. Just to be sure
+                child = klass._meta.leaf_ids.get(args[idx],None)
+                # TODO PG: add an exception here if None
+                print 'found %s' % child
+                # hook the __init__ arguments
+                child_fnames = [f.name for f in child._meta.fields]
+                print child_fnames
+                child_args = [None]*len(child_fnames)
+                for i in range(len(parent_fnames)):
+                    fname = parent_fnames[i]
+                    if fname in child_fnames:
+                        child_args[child_fnames.index(fname)] = args[i]
+                print child_args
+                inst = Model.__new__(child,*child_args,**kwargs)
+                # The modified arg list is stored on the instance itself.
+                # A hook in __init__ will send it to the original __init__
+                inst.__hooked_args__ = child_args
+                return inst
+
+            new_matview_new.__patched__ = True
+            if not getattr(new_class.__new__, '__patched__', False):
+                new_class.__new__ = staticmethod(new_matview_new)
+
+
+        if leaf:
+            # register the leaf on its materialized_view base model
+            mvbase = new_class._meta.mat_view_base
+            if new_class._meta.leaf_id in mvbase._meta.leaf_ids:
+                # is there a collision in django.utils.int32hash?
+                old_class = mvbase._meta.leaf_ids[new_class._meta.leaf_id]
+                if old_class != new_class:
+                    class MurffyError(Exception):
+                        pass
+                    # TODO PG: add a full how to get rid of this incredible bad
+                    # luck (1 out of 4 294 967 296)
+                    raise MurffyError('%s and %s models hashes collide. Please '\
+                                     'define a random int32 in one of thoses '\
+                                     'classes Meta.leaf_id.')
+            else:
+                mvbase._meta.leaf_ids[new_class._meta.leaf_id] = new_class
+                mvbase._meta.leaves[new_class] = new_class._meta.leaf_id
+
+        return new_class
+
 
     def copy_managers(cls, base_managers):
         # This is in-place sorting of an Options attribute, but that's fine.
@@ -276,6 +401,11 @@ class Model(object):
     _deferred = False
 
     def __init__(self, *args, **kwargs):
+        # if self is a leaf in materialized_view inheritance, its args may have
+        # been hooked in __new__
+        if hasattr(self,'__hooked_args__'):
+            args = self.__hooked_args__
+
         signals.pre_init.send(sender=self.__class__, args=args, kwargs=kwargs)
 
         # Set up the storage for instance state

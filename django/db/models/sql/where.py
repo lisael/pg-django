@@ -16,6 +16,13 @@ from django.db.models.sql.aggregates import Aggregate
 AND = 'AND'
 OR = 'OR'
 
+
+def get_sql_type(lvalue):
+    """ pg-djando only. find sql type of an array"""
+    if isinstance(lvalue, tuple):
+        return lvalue[2]
+
+
 class EmptyShortCircuit(Exception):
     """
     Internal exception used to indicate that a "matches nothing" node should be
@@ -214,7 +221,23 @@ class WhereNode(tree.Node):
         elif lookup_type in ('regex', 'iregex'):
             return connection.ops.regex_lookup(lookup_type) % (field_sql, cast_sql), params
 
-        raise TypeError('Invalid lookup_type: %r' % lookup_type)
+        ############### pg-django >>>>>
+        # @> is faster than ANY. ANY can't use GIN indexes
+        #elif lookup_type == 'has':
+            #return (' %%s = ANY (%s)' % field_sql, params)
+        elif lookup_type in ('has_all', 'has'):
+            return ('%s @> ARRAY[%s]::%s' % (field_sql,
+                                        ', '.join(repeat('%s', len(params))),
+                                            get_sql_type(lvalue)),
+                    params)
+        elif lookup_type == 'has_one':
+            return ('%s && ARRAY[%s]::%s' % (field_sql,
+                                        ', '.join(repeat('%s', len(params))),
+                                            get_sql_type(lvalue)),
+                    params)
+        ############## <<<<< pg_django
+
+            raise TypeError('Invalid lookup_type: %r' % lookup_type)
 
     def sql_for_columns(self, data, qn, connection):
         """

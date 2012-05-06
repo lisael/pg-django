@@ -175,6 +175,15 @@ def filepath_to_uri(path):
     # some flexibility for hardcoding separators.
     return urllib.quote(smart_str(path).replace("\\", "/"), safe="/~!*()'")
 
+from hashlib import sha1
+
+def int32hash(string):
+    """convert a string into a 'unique' integer between -2 147 483 648 and
+    2 147 483 647 (databases INTEGER type.). There is still a probability of
+    collision. Be careful """
+    return int(sha1(string).hexdigest()[-8:],16) - 2**31
+
+
 # The encoding of the default system locale but falls back to the
 # given fallback encoding if the encoding is unsupported by python or could
 # not be determined.  See tickets #10335 and #5846

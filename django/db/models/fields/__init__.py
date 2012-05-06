@@ -293,7 +293,10 @@ class Field(object):
 
     def get_prep_lookup(self, lookup_type, value):
         """
-        Perform preliminary non-db specific lookup checks and conversions
+        Perform preliminary non-db specific lookup checks and conversions.
+
+        Modified in pg-django to accept has, has_one and has_all arrays lookup
+        types
         """
         if hasattr(value, 'prepare'):
             return value.prepare()
@@ -303,10 +306,11 @@ class Field(object):
         if lookup_type in (
                 'regex', 'iregex', 'month', 'day', 'week_day', 'search',
                 'contains', 'icontains', 'iexact', 'startswith', 'istartswith',
-                'endswith', 'iendswith', 'isnull'
+                'endswith', 'iendswith', 'isnull', 'has'
             ):
             return value
-        elif lookup_type in ('exact', 'gt', 'gte', 'lt', 'lte'):
+        elif lookup_type in ('exact', 'gt', 'gte', 'lt', 'lte', 'has_all',
+                            'has_one'):
             return self.get_prep_value(value)
         elif lookup_type in ('range', 'in'):
             return [self.get_prep_value(v) for v in value]
@@ -315,7 +319,7 @@ class Field(object):
                 return int(value)
             except ValueError:
                 raise ValueError("The __year lookup type requires an integer "
-                                 "argument")
+                                    "argument")
 
         raise TypeError("Field has invalid lookup: %s" % lookup_type)
 
@@ -323,6 +327,9 @@ class Field(object):
                            prepared=False):
         """
         Returns field's value prepared for database lookup.
+
+        Modified in pg-django to accept has, has_one and has_all arrays lookup
+        types
         """
         if not prepared:
             value = self.get_prep_lookup(lookup_type, value)
@@ -340,12 +347,12 @@ class Field(object):
             return QueryWrapper(('(%s)' % sql), params)
 
         if lookup_type in ('regex', 'iregex', 'month', 'day', 'week_day',
-                           'search'):
+                           'search', 'has'):
             return [value]
         elif lookup_type in ('exact', 'gt', 'gte', 'lt', 'lte'):
             return [self.get_db_prep_value(value, connection=connection,
                                            prepared=prepared)]
-        elif lookup_type in ('range', 'in'):
+        elif lookup_type in ('range', 'in', 'has_one', 'has_all'):
             return [self.get_db_prep_value(v, connection=connection,
                                            prepared=prepared) for v in value]
         elif lookup_type in ('contains', 'icontains'):
@@ -1263,3 +1270,128 @@ class URLField(CharField):
         }
         defaults.update(kwargs)
         return super(URLField, self).formfield(**defaults)
+
+################# pg-django stuff ###########################
+
+
+from django.core.exceptions import FieldError, ValidationError
+from django.db.models.fields.subclassing import SubfieldBase
+
+
+def require_pg_django(connection, field_type=''):
+    engine = connection.settings_dict['ENGINE']
+    if 'pg_django' not in engine:
+        raise FieldError("%s is currently implemented only for PostgreSQL/pg_django" % field_type)
+
+
+class ArrayFieldBase(object):
+    """Django field type for an array of values. Supported only on PostgreSQL.
+
+    This class is not meant to be instantiated directly; instead, field classes
+    should inherit from this class and from an appropriate Django model class.
+
+    ``itertype`` is the python iterable type of field
+    """
+
+    _south_introspects = True
+
+    def __init__(self, *args, **kwargs):
+        self.itertype = kwargs.pop('itertype', list)
+        super(ArrayFieldBase, self).__init__(*args, **kwargs)
+
+    @property
+    def subinstance(self):
+        if not hasattr(self, "_subinstance"):
+            self._subinstance = copy.deepcopy(self)
+            self._subinstance.__class__ = self.fieldtype
+        return self._subinstance
+
+    def db_type(self, connection):
+        require_pg_django(connection)
+        return super(ArrayFieldBase, self).db_type(connection=connection) + '[]'
+
+    def to_python(self, value):
+        # psycopg2 already supports array types, so we don't actually need to serialize
+        # or deserialize
+        if value is None:
+            return None
+        if not isinstance(value, (list, tuple, set)):
+            try:
+                iter(value)
+            except TypeError:
+                raise ValidationError("An ArrayField value must be None or an iterable.")
+        return self.itertype([self.fieldtype.to_python(self.subinstance, x) for x in value])
+
+    def get_prep_value(self, value):
+        if value is None:
+            return None
+        return [self.fieldtype.get_prep_value(self.subinstance, v) for v in value]
+
+    def run_validators(self, value):
+        if value is None:
+            super(ArrayFieldBase, self).run_validators(value)
+        else:
+            for v in value:
+                super(ArrayFieldBase, self).run_validators(v)
+
+
+class ArrayFieldMetaclass(SubfieldBase):
+    pass
+
+
+def array_field_factory(name, fieldtype, module=ArrayFieldBase.__module__):
+    return ArrayFieldMetaclass(name, (ArrayFieldBase, fieldtype),
+        {'__module__': module,
+        'description': "An array, where each element is of the same type "\
+        "as %s." % fieldtype.__name__,
+        'fieldtype': fieldtype})
+
+# If you want to make an array version of a field not covered below, this is
+# the easiest way:
+#
+# class FooArrayField(dbarray.ArrayFieldBase, FooField):
+#     __metaclass__ = dbarray.ArrayFieldMetaclass
+
+#IntegerArrayField = array_field_factory('IntegerArrayField', models.IntegerField)
+#FloatArrayField = array_field_factory('FloatArrayField', models.FloatField)
+CharArrayField = array_field_factory('CharArrayField', CharField)
+TextArrayField = array_field_factory('TextArrayField', TextField)
+
+
+class SharedAutoField(AutoField):
+    """A sequence shared amongst several tables"""
+    # a cache of sequences already existing in the db
+    _created = {}
+
+    @property
+    def is_created(self):
+        if not self.sequence in SharedAutoField._created:
+            from django.db import connection
+            SharedAutoField._created[self.sequence] = connection.creation.sequence_exists(
+                self.sequence)
+        return SharedAutoField._created[self.sequence]
+
+    def __init__(self, *args, **kwargs):
+        self.sequence = kwargs.pop('sequence', None)
+        if not hasattr(self.__class__, 'uses_pg'):
+            from django.db import connection
+            try:
+                require_pg_django(connection, self.__class__.__name__)
+            except FieldError:
+                self.__class__.uses_pg = False
+                raise
+            else:
+                self.__class__.uses_pg = True
+        if not  self.__class__.uses_pg:
+            raise FieldError("%s is currently implemented only for PostgreSQL/pg_django" % self.__class__.name__)
+
+        super(SharedAutoField, self).__init__(*args, **kwargs)
+
+    def db_type(self, connection):
+        """
+        Returns the database column data type for this field, for the provided
+        connection.
+        """
+        return "INTEGER DEFAULT nextval('%s')" % self.sequence
+
+
