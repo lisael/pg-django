@@ -439,7 +439,6 @@ def execute_from_command_line(argv=None):
     """
     A simple method that runs a ManagementUtility.
     """
-    print 'blddsdfsdfeuarrr'
     utility = ManagementUtility(argv)
     utility.execute()
 

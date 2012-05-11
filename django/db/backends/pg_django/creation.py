@@ -73,7 +73,17 @@ class DatabaseCreation(_DatabaseCreation):
         from django.db.backends.util import truncate_name
         if f.db_index and not f.unique:
             qn = self.connection.ops.quote_name
-            db_table = model._meta.db_table
+            if model._meta.intermediate:
+                if not model._meta.concrete:
+                    # only a view, no index
+                    return []
+                else:
+                    # TODO PG: set view and table name in options
+                    if f.column == 'pgd_child_type':
+                        return []
+                    db_table = model._meta.db_table[:-5]
+            else:
+                db_table = model._meta.db_table
             tablespace = f.db_tablespace or model._meta.db_tablespace
             if tablespace:
                 tablespace_sql = self.connection.ops.tablespace_sql(tablespace)
@@ -115,74 +125,49 @@ class DatabaseCreation(_DatabaseCreation):
             output = []
         return output
 
-    def sql_create_model(self, model, style, known_models=set()):
+    def get_columns_for_mat_view(self, model, pending_references=None):
+        """match the view fields with children fields. For now i has to
+        have the same db column name. It may change in the future
         """
-        Returns the SQL required to create a single model, as a tuple of:
-            (list_of_sql, pending_references_dict)
+        ## TODO PG: import __future__
+        col_names = [f.column for f in model._meta.local_fields[:-1] ]
+        col_types = [f.db_type(self.connection) for f in model._meta.local_fields[:-1] ]
+        columns = {}
+        for child in model._meta.leaves:
+            child_columns = []
+            it = iter(col_types)
+            for col_name in col_names:
+                col_type = it.next()
+                try:
+                    f = child._meta.get_field_by_name(col_name)[0]
+                    if getattr(f, 'child_field', False):
+                        raise FieldDoesNotExist()
+                    child_columns.append((col_name,col_name,col_type))
+                    if f.rel and pending_references is not None:
+                        # TODO PG: think it doesn't work yet, as materialized
+                        # views are created after everything (get_models
+                        # is monkey-patched for this purpose). Test this
+                        pending_references.setdefault(f.rel.to, []).append(
+                                                                (model, f))
+                except FieldDoesNotExist:
+                    child_columns.append((None,col_name, col_type))
+            columns[child] = child_columns
 
-        pg-django adds support for materialized views, db-level cascades
-        and defaults
-        """
-        opts = model._meta
-        if not opts.managed or opts.proxy:
-            return [], {}
-        final_output = []
-        table_output = []
-        pending_references = {}
+        return columns
+
+
+    def _sql_create_table_for_model(self, model, style, final_output,
+                                    pending_references, known_models):
         qn = self.connection.ops.quote_name
-
-
-        ctype = model._meta.leaf and model._meta.leaf_id or ''
-
-        matview = model._meta.materialized_view
-        if matview:
-            ## match the view fields with children fields. For now i has to
-            ## have the same db column name. It may change in th future
-            ## TODO PG: import __future__
-            col_names = [f.column for f in model._meta.local_fields[:-1] ]
-            columns = {}
-            for child in model._meta.leaves:
-                child_columns = []
-                for col_name in col_names:
-                    try:
-                        f = child._meta.get_field_by_name(col_name)[0]
-                        child_columns.append((col_name,col_name))
-                        if f.rel:
-                            # TODO PG: think it doesn't work yet, as materialized
-                            # views are created after everything (get_models
-                            # is monkey-patched for this purpose). Test this
-                            pending_references.setdefault(f.rel.to, []).append(
-                                                                    (model, f))
-                    except FieldDoesNotExist:
-                        child_columns.append((None,col_name))
-                columns[child] = child_columns
-
-            # create the view
-            view_name = model._meta.db_table + '_view'
-            full_view_statement = style.SQL_KEYWORD('CREATE OR REPLACE VIEW') + ' '
-            full_view_statement += style.SQL_TABLE(qn(view_name)) + ' '
-            full_view_statement += style.SQL_KEYWORD('AS') + '\n    '
-            subselects = []
-            for child in columns:
-                child_statement = style.SQL_KEYWORD('SELECT ')
-                for value, name in columns[child]:
-                    if value is None:
-                        child_statement += style.SQL_KEYWORD('NULL AS ')
-                    child_statement += style.SQL_FIELD(qn(name)) + ', '
-                child_statement += str(child._meta.leaf_id)
-                child_statement += ' ' + style.SQL_KEYWORD('AS') + ' '
-                child_statement += style.SQL_FIELD(qn('pgd_child_type'))
-                child_statement += '\n        ' + style.SQL_KEYWORD('FROM')
-                child_statement += ' ' + style.SQL_TABLE(qn(child._meta.db_table))
-                subselects.append(child_statement)
-            union = '\n    ' + style.SQL_KEYWORD('UNION ALL') + '\n    '
-            subselects = union.join(subselects)
-            full_view_statement += subselects + '\n;'
-
-            final_output.append(full_view_statement)
-        ### ... end
-
+        opts = model._meta
+        intermediate = opts.intermediate
+        matview = opts.materialized_view
+        table_name = opts.concrete_table_name
+        table_output = []
         for f in opts.local_fields:
+            if intermediate and (f.name == 'pgd_child_type' or
+                                 getattr(f, 'child_field',False)):
+                continue
             col_type = f.db_type(connection=self.connection)
             tablespace = f.db_tablespace or opts.db_tablespace
             if col_type is None:
@@ -193,7 +178,7 @@ class DatabaseCreation(_DatabaseCreation):
             field_output = [style.SQL_FIELD(qn(f.column)),
                 style.SQL_COLTYPE(col_type)]
 
-            #### added...
+            # make the sequence of SharedAutoFields if it does not exist yet
             if isinstance(f, SharedAutoField):
                 if not f.is_created:
                     seq = f.sequence
@@ -201,7 +186,7 @@ class DatabaseCreation(_DatabaseCreation):
                         'CREATE SEQUENCE ') +
                         style.SQL_TABLE(qn(seq)) + ';\n')
                     SharedAutoField._created[seq] = True
-            ### ... end
+
 
             if not f.null and not matview:
                 field_output.append(style.SQL_KEYWORD('NOT NULL'))
@@ -225,16 +210,18 @@ class DatabaseCreation(_DatabaseCreation):
                 else:
                     field_output.extend(ref_output)
             table_output.append(' '.join(field_output))
+
+
         for field_constraints in opts.unique_together:
             if matview:
                 break
             table_output.append(style.SQL_KEYWORD('UNIQUE') + ' (%s)' %
                 ", ".join(
                     [style.SQL_FIELD(qn(opts.get_field(f).column))
-                     for f in field_constraints]))
+                    for f in field_constraints]))
 
         full_statement = [style.SQL_KEYWORD('CREATE TABLE') + ' ' +
-                          style.SQL_TABLE(qn(opts.db_table)) + ' (']
+                        style.SQL_TABLE(qn(table_name)) + ' (']
         for i, line in enumerate(table_output): # Combine and add commas.
             full_statement.append(
                 '    %s%s' % (line, i < len(table_output)-1 and ',' or ''))
@@ -247,126 +234,292 @@ class DatabaseCreation(_DatabaseCreation):
         full_statement.append(';')
         final_output.append('\n'.join(full_statement))
 
-        ### added ...
+        return table_name
+
+
+    def sql_create_model(self, model, style, known_models=set()):
+        """
+        Returns the SQL required to create a single model, as a tuple of:
+            (list_of_sql, pending_references_dict)
+
+        pg-django adds support for materialized views, db-level cascades
+        and defaults
+        """
+        opts = model._meta
+        if not opts.managed or opts.proxy:
+            return [], {}
+        final_output = []
+        pending_references = {}
+        qn = self.connection.ops.quote_name
+
+        ctype = model._meta.leaf and model._meta.leaf_id or ''
+
+        view = model._meta.db_view
+        matview = model._meta.materialized_view
+        intermediate = model._meta.intermediate
+        concrete = model._meta.concrete
         if matview:
-            # create the triggers
-            final_output.extend(self.make_view_update_statements(
-                model, style, opts, columns))
-            final_output.extend(self.make_view_insert_statements(
-                model, style, opts, columns))
-            final_output.extend(self.make_view_delete_statements(
-                model, style, opts, columns))
+            for leaf in model._meta.leaves :
+                if leaf._meta.intermediate:
+                    # the intermediate concrete tables are not created yet.
+                    # pre-create it now
+                    self._sql_create_table_for_model(leaf, style, final_output,
+                                        pending_references, known_models)
 
-        ### ... end
+            columns = self.get_columns_for_mat_view(model,pending_references)
 
-        if opts.has_auto_field:
-            # Add any extra SQL needed to support auto-incrementing primary
-            # keys.
-            auto_column = opts.auto_field.db_column or opts.auto_field.name
-            autoinc_sql = self.connection.ops.autoinc_sql(opts.db_table,
-                                                          auto_column)
-            if autoinc_sql:
-                for stmt in autoinc_sql:
-                    final_output.append(stmt)
+            # create the view as a union of the leaf tables
+            view_name = model._meta.db_table + '_view'
+            full_view_statement = style.SQL_KEYWORD('CREATE OR REPLACE VIEW') + ' '
+            full_view_statement += style.SQL_TABLE(qn(view_name)) + ' '
+            full_view_statement += style.SQL_KEYWORD('AS') + '\n    '
+            subselects = []
+            type_subselect = style.SQL_KEYWORD('SELECT ')
+            for child in columns:
+                child_statement = style.SQL_KEYWORD('SELECT ')
+                for value, name , col_type in columns[child]:
+                    if value is None:
+                        child_statement += style.SQL_KEYWORD('NULL::%s AS ' % col_type)
+                    child_statement += style.SQL_FIELD(qn(name)) + ', '
+                child_statement += str(child._meta.leaf_id)
+                child_statement += ' ' + style.SQL_KEYWORD('AS') + ' '
+                child_statement += style.SQL_FIELD(qn('pgd_child_type'))
+                child_statement += '\n        ' + style.SQL_KEYWORD('FROM')
+                child_statement += ' ' + style.SQL_TABLE(qn(child._meta.concrete_table_name))
+                subselects.append(child_statement)
+            union = '\n    ' + style.SQL_KEYWORD('UNION ALL') + '\n    '
+            subselects = union.join(subselects)
+            full_view_statement += subselects + '\n;'
+
+            final_output.append(full_view_statement)
+
+        if intermediate:
+            # create the view as a subset of base materialized view
+            # cherry-picking fields and rows
+            columns = self.get_columns_for_mat_view(model._meta.mat_view_base)
+            view_name = model._meta.db_table
+            base_name = model._meta.mat_view_base._meta.db_table
+            full_view_statement = style.SQL_KEYWORD('CREATE OR REPLACE VIEW') + ' '
+            full_view_statement += style.SQL_TABLE(qn(view_name)) + ' '
+            full_view_statement += style.SQL_KEYWORD('AS') + '\n    '
+            full_view_statement += style.SQL_KEYWORD('SELECT ')
+            col_names = [ style.SQL_FIELD(qn(f.column)) for f in model._meta.fields]
+            full_view_statement += ', '.join(col_names) + '\n    '
+            full_view_statement += style.SQL_KEYWORD('FROM ')
+            full_view_statement += style.SQL_TABLE(qn(base_name)) + '\n        '
+            full_view_statement += style.SQL_KEYWORD('WHERE ')
+            full_view_statement += style.SQL_FIELD(qn('pgd_child_type')) + ' '
+            full_view_statement += style.SQL_KEYWORD('IN') + ' ('
+            leaf_ids = model._meta.leaf_ids.keys()
+            if concrete:
+                leaf_ids.append(model._meta.leaf_id)
+            full_view_statement += ', '.join(str(l) for l in leaf_ids) + ')\n;'
+
+            final_output.append(full_view_statement)
+
+        elif view:
+            pass
+
+        if concrete:
+            # intermediate concrete tables are pre-created by their base mat views
+            if not intermediate:
+                self._sql_create_table_for_model(model, style, final_output,
+                                            pending_references, known_models)
+
+            if matview:
+                # create the triggers
+                for leaf in model._meta.leaves :
+                    if not leaf._meta.concrete:
+                        continue
+                    final_output.extend(self.make_view_update_statements(
+                        model, leaf, style, columns))
+                    final_output.extend(self.make_view_insert_statements(
+                        model, leaf, style, columns))
+                    final_output.extend(self.make_view_delete_statements(
+                        model, leaf, style, columns))
+
+            if intermediate and concrete:
+                table_name = model._meta.concrete_table_name
+                # creates rules for intermediate update
+                final_output.append(self.make_insert_rule(model, view_name,
+                                                          table_name, style))
+                final_output.append(self.make_delete_rule(model, view_name,
+                                                          table_name, style))
+                final_output.append(self.make_update_rule(model, view_name,
+                                                          table_name, style))
+
+            if opts.has_auto_field:
+                # Add any extra SQL needed to support auto-incrementing primary
+                # keys.
+                auto_column = opts.auto_field.db_column or opts.auto_field.name
+                autoinc_sql = self.connection.ops.autoinc_sql(opts.db_table,
+                                                            auto_column)
+                if autoinc_sql:
+                    for stmt in autoinc_sql:
+                        final_output.append(stmt)
 
         return final_output, pending_references
+
+    def make_delete_rule(self, model, view_name, table_name, style):
+        qn = self.connection.ops.quote_name
+        rule_name = view_name + '_delete_rule'
+        stmt = style.SQL_KEYWORD('CREATE RULE ')
+        stmt += style.SQL_TABLE(qn(rule_name)) + ' '
+        stmt += style.SQL_KEYWORD('AS ON DELETE TO') + ' '
+        stmt += style.SQL_TABLE(qn(view_name)) + ' \n    '
+        stmt += style.SQL_KEYWORD('DO INSTEAD DELETE FROM') + ' '
+        stmt += style.SQL_TABLE(qn(table_name)) + ' '
+        stmt += style.SQL_KEYWORD('WHERE ')
+        stmt += style.SQL_FIELD(model._meta.pk.column) + ' = '
+        stmt += 'OLD.' + style.SQL_FIELD(model._meta.pk.column)
+        stmt += '\n;'
+        return stmt
+
+    def make_update_rule(self, model, view_name, table_name, style):
+        qn = self.connection.ops.quote_name
+        rule_name = view_name + '_update_rule'
+        stmt = style.SQL_KEYWORD('CREATE RULE ')
+        stmt += style.SQL_TABLE(qn(rule_name)) + ' '
+        stmt += style.SQL_KEYWORD('AS ON UPDATE TO') + ' '
+        stmt += style.SQL_TABLE(qn(view_name)) + ' \n    '
+        stmt += style.SQL_KEYWORD('DO INSTEAD UPDATE') + ' '
+        stmt += style.SQL_TABLE(qn(table_name)) + ' '
+        stmt += style.SQL_KEYWORD('SET') + '  '
+        stmt += ', '.join(style.SQL_FIELD(qn(f.column)) + ' = NEW.' + style.SQL_FIELD(qn(f.column))  for f
+                            in model._meta.fields
+                            if f.name != 'pgd_child_type' and not
+                            getattr(f,'child_field',False) and not
+                            f.primary_key) + ' \n    '
+        stmt += style.SQL_KEYWORD('WHERE ') + style.SQL_FIELD(model._meta.pk.column) + ' = NEW.'
+        stmt += style.SQL_FIELD(model._meta.pk.column) + '\n;'
+        return stmt
+
+    def make_insert_rule(self, model, view_name, table_name, style):
+        qn = self.connection.ops.quote_name
+        concrete_fields = [ style.SQL_FIELD(qn(f.column)) for f
+                            in model._meta.fields
+                            if f.name not in ('pgd_child_type', 'id') and not
+                            getattr(f,'child_field',False)]
+        rule_name = view_name + '_insert_rule'
+        stmt = style.SQL_KEYWORD('CREATE RULE ')
+        stmt += style.SQL_TABLE(qn(rule_name)) + ' '
+        stmt += style.SQL_KEYWORD('AS ON INSERT TO') + ' '
+        stmt += style.SQL_TABLE(qn(view_name)) + ' \n    '
+        stmt += style.SQL_KEYWORD('DO INSTEAD INSERT INTO') + ' '
+        stmt += style.SQL_TABLE(qn(table_name)) + ' ( '
+        stmt += ', '.join(concrete_fields) + ' )\n    '
+        stmt += style.SQL_KEYWORD('VALUES') + ' ( NEW.'
+        stmt += ', NEW.'.join(concrete_fields)
+        stmt += ')\n        ' + style.SQL_KEYWORD('RETURNING') + ' '
+        returning_fields = []
+        for f in model._meta.fields:
+            if f.name == 'pgd_child_type' or getattr(f,'child_field',False):
+                returning_fields.append('NULL::%s AS %s' % (f.db_type(self.connection), f.column))
+            else:
+                returning_fields.append('%s.%s' % (style.SQL_TABLE(qn(table_name)),
+                                                  style.SQL_FIELD(f.column))
+                                       )
+        stmt += ', '.join(returning_fields) + '\n;'
+        #stmt += style.SQL_TABLE(qn(table_name)) + '.id, (SELECT NULL::VARCHAR)\n;'
+        #+ style.SQL_FIELD(qn(model._meta.pk.column))
+        return stmt
 
     def sequence_exists(self, sequence):
         """return True if the given sequence exists in database"""
         cur = self.connection.cursor()
         cur.execute("""SELECT * FROM pg_catalog.pg_class
-                   WHERE relname = %s and relkind = 'S'""",[sequence])
+                   WHERE relname = %s AND relkind = 'S'""",[sequence])
         if len(cur.fetchall()):
             return True
         return False
 
-    def make_view_update_statements(self, model, style, meta, columns):
+    def make_view_update_statements(self, model, leaf, style, columns):
         output = []
-        for child in model._meta.leaves:
-            qn = self.connection.ops.quote_name
-            # update trigger
-            ut_name = child._meta.db_table + '_ut'
-            ut_body = style.SQL_KEYWORD('UPDATE') + ' '
-            ut_body += style.SQL_TABLE(qn(meta.db_table)) + '\n'
-            ut_body += style.SQL_KEYWORD('SET') + ' '
-            ut_body += ', '.join([style.SQL_FIELD(qn(name)
-                            ) + style.SQL_KEYWORD(' = new.'
-                            ) + style.SQL_FIELD(qn(name)
-            ) for value, name in columns[child] if value not in (None, 'id')])
-            ut_body += '\n    ' + style.SQL_KEYWORD('WHERE') + ' '
-            ut_body += style.SQL_FIELD(qn('id')) + ' '
-            ut_body += style.SQL_KEYWORD('=') + ' new.'
-            ut_body += style.SQL_FIELD(qn('id')) + ';\n'
-            ut_body += style.SQL_KEYWORD('RETURN NULL') + ';'
+        leaf_table = leaf._meta.concrete_table_name
+        qn = self.connection.ops.quote_name
+        # update trigger
+        ut_name = leaf_table + '_ut'
+        ut_body = style.SQL_KEYWORD('UPDATE') + ' '
+        ut_body += style.SQL_TABLE(qn(model._meta.db_table)) + '\n'
+        ut_body += style.SQL_KEYWORD('SET') + ' '
+        ut_body += ', '.join([style.SQL_FIELD(qn(name)
+                        ) + style.SQL_KEYWORD(' = new.'
+                        ) + style.SQL_FIELD(qn(name)
+        ) for value, name, _ in columns[leaf] if value not in (None, model._meta.pk.column)])
+        ut_body += '\n    ' + style.SQL_KEYWORD('WHERE') + ' '
+        ut_body += style.SQL_FIELD(qn(model._meta.pk.column)) + ' '
+        ut_body += style.SQL_KEYWORD('=') + ' NEW.'
+        ut_body += style.SQL_FIELD(qn(model._meta.pk.column)) + ';\n'
+        ut_body += style.SQL_KEYWORD('RETURN NULL') + ';'
 
-            output.append(self.make_proc_statement(style,
-                                        name=ut_name,
-                                        returns='TRIGGER',
-                                        body=ut_body) + '\n')
+        output.append(self.make_proc_statement(style,
+                                    name=ut_name,
+                                    returns='TRIGGER',
+                                    body=ut_body) + '\n')
 
-            output.append(self.make_create_trigger_statement(
-                                        style,
-                                        ut_name,
-                                        'AFTER UPDATE',
-                                        child._meta.db_table,
-                                        ut_name) + '\n')
+        output.append(self.make_create_trigger_statement(
+                                    style,
+                                    ut_name,
+                                    'AFTER UPDATE',
+                                    leaf_table,
+                                    ut_name) + '\n')
         return output
 
-    def make_view_delete_statements(self, model, style, meta, columns):
+    def make_view_delete_statements(self, model, leaf, style, columns):
         output = []
-        for child in model._meta.leaves:
-            qn = self.connection.ops.quote_name
-            # update trigger
-            dt_name = child._meta.db_table + '_dt'
-            dt_body = style.SQL_KEYWORD('DELETE FROM') + ' '
-            dt_body += style.SQL_TABLE(qn(meta.db_table)) + '\n'
-            dt_body += '\n    ' + style.SQL_KEYWORD('WHERE') + ' '
-            dt_body += style.SQL_FIELD(qn('id')) + ' '
-            dt_body += style.SQL_KEYWORD('=') + ' old.'
-            dt_body += style.SQL_FIELD(qn('id')) + ';\n'
-            dt_body += style.SQL_KEYWORD('RETURN NULL') + ';'
+        leaf_table = leaf._meta.concrete_table_name
+        qn = self.connection.ops.quote_name
+        # update trigger
+        dt_name = leaf_table + '_dt'
+        dt_body = style.SQL_KEYWORD('DELETE FROM') + ' '
+        dt_body += style.SQL_TABLE(qn(model._meta.db_table)) + '\n'
+        dt_body += '\n    ' + style.SQL_KEYWORD('WHERE') + ' '
+        dt_body += style.SQL_FIELD(qn(model._meta.pk.column)) + ' '
+        dt_body += style.SQL_KEYWORD('=') + ' old.'
+        dt_body += style.SQL_FIELD(qn(model._meta.pk.column)) + ';\n'
+        dt_body += style.SQL_KEYWORD('RETURN NULL') + ';'
 
-            output.append(self.make_proc_statement(style,
-                                        name=dt_name,
-                                        returns='TRIGGER',
-                                        body=dt_body) + '\n')
+        output.append(self.make_proc_statement(style,
+                                    name=dt_name,
+                                    returns='TRIGGER',
+                                    body=dt_body) + '\n')
 
-            output.append(self.make_create_trigger_statement(
-                                        style,
-                                        dt_name,
-                                        'AFTER DELETE',
-                                        child._meta.db_table,
-                                        dt_name) + '\n')
+        output.append(self.make_create_trigger_statement(
+                                    style,
+                                    dt_name,
+                                    'AFTER DELETE',
+                                    leaf_table,
+                                    dt_name) + '\n')
         return output
 
-    def make_view_insert_statements(self, model, style, meta, columns):
+    def make_view_insert_statements(self, model, leaf, style, columns):
         output = []
-        for child in model._meta.leaves:
-            qn = self.connection.ops.quote_name
-            # update trigger
-            it_name = child._meta.db_table + '_it'
-            it_body = style.SQL_KEYWORD('INSERT INTO') + ' '
-            it_body += style.SQL_TABLE(qn(meta.db_table)) + ' ( '
-            it_body += ', '.join([style.SQL_FIELD(qn(name)
-                ) for value, name in columns[child] if value is not None])
-            it_body += ', ' + style.SQL_FIELD('"pgd_child_type"') + ')\n    '
-            it_body += style.SQL_KEYWORD('VALUES') + ' ( new.'
-            it_body += ', new.'.join([style.SQL_FIELD(qn(name)
-                ) for value, name in columns[child] if value is not None])
-            it_body += ', %s );\n' % child._meta.leaf_id
-            it_body += style.SQL_KEYWORD('RETURN NULL') + ';'
+        leaf_table = leaf._meta.concrete_table_name
+        qn = self.connection.ops.quote_name
+        # update trigger
+        it_name = leaf_table + '_it'
+        it_body = style.SQL_KEYWORD('INSERT INTO') + ' '
+        it_body += style.SQL_TABLE(qn(model._meta.db_table)) + ' ( '
+        it_body += ', '.join([style.SQL_FIELD(qn(name)
+            ) for value, name , _ in columns[leaf] if value is not None])
+        it_body += ', ' + style.SQL_FIELD('"pgd_child_type"') + ')\n    '
+        it_body += style.SQL_KEYWORD('VALUES') + ' ( NEW.'
+        it_body += ', NEW.'.join([style.SQL_FIELD(qn(name)
+            ) for value, name, _ in columns[leaf] if value is not None])
+        it_body += ', %s );\n' % leaf._meta.leaf_id
+        it_body += style.SQL_KEYWORD('RETURN NULL') + ';'
 
-            output.append(self.make_proc_statement(style,
-                                        name=it_name,
-                                        returns='TRIGGER',
-                                        body=it_body) + '\n')
+        output.append(self.make_proc_statement(style,
+                                    name=it_name,
+                                    returns='TRIGGER',
+                                    body=it_body) + '\n')
 
-            output.append(self.make_create_trigger_statement(
-                                        style,
-                                        it_name,
-                                        'AFTER INSERT',
-                                        child._meta.db_table,
-                                        it_name) + '\n')
+        output.append(self.make_create_trigger_statement(
+                                    style,
+                                    it_name,
+                                    'AFTER INSERT',
+                                    leaf_table,
+                                    it_name) + '\n')
         return output
 
     def make_create_trigger_statement(self, style, name, event, table, proc):

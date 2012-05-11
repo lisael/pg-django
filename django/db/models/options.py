@@ -19,7 +19,7 @@ DEFAULT_NAMES = ('verbose_name', 'verbose_name_plural', 'db_table', 'ordering',
                 'unique_together', 'permissions', 'get_latest_by',
                 'order_with_respect_to', 'app_label', 'db_tablespace',
                 'abstract', 'managed', 'proxy', 'auto_created',
-                'db_view', 'materialized_view')
+                'db_view', 'materialized_view', 'db_view_sql', 'concrete')
 
 
 class Options(object):
@@ -56,8 +56,16 @@ class Options(object):
         self.parents = SortedDict()
         self.duplicate_targets = {}
         self.auto_created = False
+        # is it a materialized_view base model
         self.materialized_view = False
+        # is it a view
         self.db_view = False
+        self.db_view_sql = None
+        # is it an intermediate view in a materialized based inheritance tree
+        self.intermediate = False
+        # is it a concrete intermediate view (instantiable and creates a db
+        # table)
+        self.concrete = True
         self.leaf = False
 
         # To handle various inheritance situations, we need to track where
@@ -117,8 +125,22 @@ class Options(object):
 
         # If the db_table wasn't provided, use the app_label + module_name.
         if not self.db_table:
+            # remember that the db_table was set automatically
+            self._auto_db_table = True
             self.db_table = "%s_%s" % (self.app_label, self.module_name)
             self.db_table = truncate_name(self.db_table, connection.ops.max_name_length())
+        else:
+            self._auto_db_table = False
+
+    @property
+    def concrete_table_name(self):
+        table_name = self.db_table
+        if self.intermediate:
+            if self._auto_db_table:
+                table_name = table_name[:-5]
+            else:
+                table_name += '_concrete'
+        return table_name
 
     def _prepare(self, model):
         if self.order_with_respect_to:
@@ -210,6 +232,35 @@ class Options(object):
                 continue
             for column in elt:
                 self.duplicate_targets[column] = elt.difference(set([column]))
+
+    def register_leaf(self,leaf):
+        if not self.materialized_view:
+            # TODO PG: exception?
+            return
+
+        if leaf._meta.leaf_id in self.leaf_ids:
+            # is there a collision in django.utils.int32hash?
+            old_class = self.leaf_ids[leaf._meta.leaf_id]
+            if old_class != leaf:
+                class MurffyError(Exception):
+                    pass
+                # TODO PG: add a full how to get rid of this incredible bad
+                # luck (1 out of 4 294 967 296)
+                raise MurffyError('%s and %s models hashes collide. Please '\
+                                    'define a random int32 in one of thoses '\
+                                    'classes Meta.leaf_id.' % (old_class, leaf))
+        else:
+            self.leaf_ids[leaf._meta.leaf_id] = leaf
+            self.leaves[leaf] = leaf._meta.leaf_id
+            for base in leaf.__mro__:
+                if hasattr(base,'_meta') and base._meta.intermediate:
+                    # add the leaf to intermediate views
+                    base._meta.leaf_ids[leaf._meta.leaf_id] = leaf
+                    base._meta.leaves[leaf] = leaf._meta.leaf_id
+                    if base in self.leaves and not base._meta.concrete:
+                        # remove the view from leaves
+                        del self.leaves[base._meta.concrete_model]
+                        del self.leaf_ids[base._meta.leaf_id]
 
     def add_field(self, field):
         # Insert the given field in the order in which it was created, using

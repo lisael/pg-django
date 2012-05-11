@@ -78,13 +78,37 @@ class ModelBase(type):
                         new_class._meta.ordering = base_meta.ordering
                     if not hasattr(meta, 'get_latest_by'):
                         new_class._meta.get_latest_by = base_meta.get_latest_by
-                if base_meta.materialized_view:
+                if base_meta.materialized_view or base_meta.leaf or (
+                        base_meta.db_view and base_meta.intermediate):
                     if mat_view :
                         raise TypeError('A materialized view cannot inherit from another')
                     new_class._meta.leaf = True
                     leaf = True
                     # register the materialized_view base
                     new_class._meta.mat_view_base = base_meta.concrete_model
+                if base_meta.leaf:
+                    mat_view_base = base_meta.mat_view_base
+                    new_class._meta.mat_view_base = mat_view_base
+                    # turn the base into an intermediate view
+                    base_meta.db_view = True
+                    if base_meta._auto_db_table:
+                        base_meta.db_table = '%s_%s' % (base_meta.db_table, 'view')
+                    base_meta.intermediate = True
+                    base_meta.leaf = False
+                    base_meta.abstract = True
+                    if base_meta.concrete:
+                        base_model = mat_view_base._meta.leaf_ids[base_meta.leaf_id]
+                        # concrete views know about themselves...
+                        base_meta.leaves = {base_model: base_meta.leaf_id}
+                        base_meta.leaf_ids = {base_meta.leaf_id: base_model}
+                    else:
+                        base_meta.leaves = {}
+                        base_meta.leaf_ids = {}
+                    ctype_field = IntegerField(db_index=True)
+                    ctype_field.acquired = True
+                    base_meta.concrete_model.add_to_class('pgd_child_type', ctype_field)
+                if base_meta.intermediate:
+                    new_class._meta.mat_view_base = base_meta.mat_view_base
 
         is_proxy = new_class._meta.proxy
 
@@ -156,26 +180,32 @@ class ModelBase(type):
                 if isinstance(f, OneToOneField)])
 
         if leaf:
-            # Add all child fields on the base parent and mark them inherited
+            # Add all child fields on its materalized and intermediate views and mark them
+            # acquired
             child_fields = new_class._meta.local_fields + new_class._meta.local_many_to_many
-            inserted = False
-            mat_view_base = new_class._meta.mat_view_base
-            for field in child_fields:
-                if not getattr(field, 'acquired', False):
-                    inserted = True
-                    parent_field = copy.deepcopy(field)
-                    parent_field.acquired = True
-                    mat_view_base.add_to_class(field.name, parent_field)
-            if inserted:
-                # move pgd_child_type at last position on the parent
-                ctype_field = mat_view_base._meta.get_field_by_name('pgd_child_type')[0]
-                mat_view_base._meta.local_fields.remove(ctype_field)
-                mat_view_base._meta.local_fields.append(ctype_field)
-                if hasattr(mat_view_base._meta, '_field_cache'):
-                    del mat_view_base._meta._field_cache
-                    del mat_view_base._meta._field_name_cache
-                if hasattr(mat_view_base._meta, '_name_map'):
-                    del mat_view_base._meta._name_map
+            for base in [c for c in new_class.__mro__ if hasattr(c, '_meta') and (
+                         c._meta.intermediate or c._meta.materialized_view) ]:
+                inserted = False
+                for field in child_fields:
+                    if not getattr(field, 'acquired', False):
+                        inserted = True
+                        parent_field = copy.deepcopy(field)
+                        parent_field.acquired = True
+                        if base._meta.intermediate:
+                            parent_field.child_field = True
+                        base.add_to_class(field.name, parent_field)
+                if inserted:
+                    # move pgd_child_type at last position on the parent
+                    ctype_field = base._meta.get_field_by_name('pgd_child_type')[0]
+                    base._meta.local_fields.remove(ctype_field)
+                    base._meta.local_fields.append(ctype_field)
+                    # invalidate field caches
+                    if hasattr(base._meta, '_field_cache'):
+                        del base._meta._field_cache
+                        del base._meta._field_name_cache
+                    if hasattr(base._meta, '_name_map'):
+                        del base._meta._name_map
+
 
         for base in parents:
             original_base = base
@@ -195,6 +225,7 @@ class ModelBase(type):
                                         'with field of similar name from '
                                         'base class %r' %
                                             (field.name, name, base.__name__))
+
             if not base._meta.abstract:
                 # Concrete classes...
                 base = base._meta.concrete_model
@@ -264,28 +295,33 @@ class ModelBase(type):
             # joins
             new_class._meta.abstract = True
 
-            # Now, we override new_class.__new__ on
+            # Now, we override new_class.__new__ on non-concrete intermediate and
             # materialized views to choose the class of the new object returned
             # when the user (or a QuerySet) tries to instanciate it.
             # It is chosen amongst leaves
             def new_matview_new(klass,*args,**kwargs):
-                # children classes are not patched
-                if not klass._meta.materialized_view:
+                print '#### new ####'
+                print args
+                print kwargs
+                # leaf classes are not patched
+                if not (klass._meta.materialized_view or
+                            klass._meta.intermediate):
+                    return Model.__new__(klass, *args, **kwargs)
+                if len(kwargs) and klass._meta.concrete:
+                    # probably a user instanciation
                     return Model.__new__(klass, *args, **kwargs)
                 parent_fnames = [f.name for f in klass._meta.fields]
                 idx = parent_fnames.index('pgd_child_type')
-                if args[idx] == None and 'pgd_child_type' not in kwargs:
+                if len(args) <= idx and 'pgd_child_type' not in kwargs:
                     # instancied without a ctype... Yet again a clever user
                     # anyway, let him go, if he wants to shoot himself
                     # he won't be able to save a base instances
                     return Model.__new__(klass,*args,**kwargs)
-                print '##### new #####'
-                print args
-                print kwargs
                 # Here is the magic: if you try to instanciate a m10d view
                 # you get its subbclass corresponding to its pgd_child_type
                 # That how mixed queryset work.
                 # pgd_child_type should be the last field. Just to be sure
+                import pdb; pdb.set_trace() ### XXX BREAKPOINT
                 child = klass._meta.leaf_ids.get(args[idx],None)
                 # TODO PG: add an exception here if None
                 print 'found %s' % child
@@ -308,27 +344,12 @@ class ModelBase(type):
             if not getattr(new_class.__new__, '__patched__', False):
                 new_class.__new__ = staticmethod(new_matview_new)
 
-
-        if leaf:
+        if leaf or (new_class._meta.intermediate and new_class._meta.concrete):
             # register the leaf on its materialized_view base model
             mvbase = new_class._meta.mat_view_base
-            if new_class._meta.leaf_id in mvbase._meta.leaf_ids:
-                # is there a collision in django.utils.int32hash?
-                old_class = mvbase._meta.leaf_ids[new_class._meta.leaf_id]
-                if old_class != new_class:
-                    class MurffyError(Exception):
-                        pass
-                    # TODO PG: add a full how to get rid of this incredible bad
-                    # luck (1 out of 4 294 967 296)
-                    raise MurffyError('%s and %s models hashes collide. Please '\
-                                     'define a random int32 in one of thoses '\
-                                     'classes Meta.leaf_id.')
-            else:
-                mvbase._meta.leaf_ids[new_class._meta.leaf_id] = new_class
-                mvbase._meta.leaves[new_class] = new_class._meta.leaf_id
+            mvbase._meta.register_leaf(new_class)
 
         return new_class
-
 
     def copy_managers(cls, base_managers):
         # This is in-place sorting of an Options attribute, but that's fine.
@@ -590,6 +611,14 @@ class Model(object):
         """
         if force_insert and force_update:
             raise ValueError("Cannot force both insert and updating in model saving.")
+
+        if (self.__class__._meta.materialized_view or
+                    (self.__class__._meta.intermediate and not
+                     self.__class__._meta.concrete)):
+            # TODO PG: specialized exception
+            raise Exception('Materialized views and intermediate views can\'t be'\
+                            'saved or deleted')
+
         self.save_base(using=using, force_insert=force_insert, force_update=force_update)
 
     save.alters_data = True
@@ -698,6 +727,12 @@ class Model(object):
     save_base.alters_data = True
 
     def delete(self, using=None):
+        if (self.__class__._meta.materialized_view or
+                    (self.__class__._meta.intermediate and not
+                     self.__class__._meta.concrete)):
+            # TODO PG: specialized exception
+            raise Exception('Materialized views and intermediate views can\'t be'\
+                            'saved or deleted')
         using = using or router.db_for_write(self.__class__, instance=self)
         assert self._get_pk_val() is not None, "%s object can't be deleted because its %s attribute is set to None." % (self._meta.object_name, self._meta.pk.attname)
 
