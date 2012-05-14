@@ -21,16 +21,17 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
         1266: 'TimeField',
         1700: 'DecimalField',
     }
-        
-    def get_table_list(self, cursor):
+
+    def get_table_list(self, cursor, ignore_views=False):
         "Returns a list of table names in the current database."
         cursor.execute("""
             SELECT c.relname
             FROM pg_catalog.pg_class c
             LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relkind IN ('r', 'v', '')
+            WHERE c.relkind IN ('r', %s'')
                 AND n.nspname NOT IN ('pg_catalog', 'pg_toast')
-                AND pg_catalog.pg_table_is_visible(c.oid)""")
+                AND pg_catalog.pg_table_is_visible(c.oid)
+                """ % ((not ignore_views) and "'v', " or ''))
         return [row[0] for row in cursor.fetchall()]
 
     def get_table_description(self, cursor, table_name):

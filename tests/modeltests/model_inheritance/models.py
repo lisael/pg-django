@@ -1,15 +1,18 @@
 """
 XX. Model inheritance
 
-Model inheritance exists in two varieties:
+Model inheritance exists in three varieties:
     - abstract base classes which are a way of specifying common
       information inherited by the subclasses. They don't exist as a separate
       model.
     - non-abstract base classes (the default), which are models in their own
       right with their own database tables and everything. Their subclasses
       have references back to them, created automatically.
+    - materialized view base class, which base class is a db materialized view
+      that acquires all fields from its children
 
-Both styles are demonstrated here.
+Abstract and non-abstract are demonstrated here, materialized view base is
+tested in model_materialized_view_inheritance test package.
 """
 
 from django.db import models

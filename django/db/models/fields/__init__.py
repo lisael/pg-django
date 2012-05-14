@@ -1307,7 +1307,9 @@ class ArrayFieldBase(object):
         return self._subinstance
 
     def db_type(self, connection):
-        require_pg_django(connection)
+        if not getattr(connection.features, 'support_arrays',False):
+            raise FieldError("%s is not implemented for current database backend"
+                             % self.__class__.__name__)
         return super(ArrayFieldBase, self).db_type(connection=connection) + '[]'
 
     def to_python(self, value):
@@ -1363,28 +1365,23 @@ class SharedAutoField(AutoField):
     # a cache of sequences already existing in the db
     _created = {}
 
-    @property
-    def is_created(self):
-        if not self.sequence in SharedAutoField._created:
-            from django.db import connection
-            SharedAutoField._created[self.sequence] = connection.creation.sequence_exists(
-                self.sequence)
-        return SharedAutoField._created[self.sequence]
+    def exists_for_connection(self,connection):
+        uid = connection.introspection.get_unique_name()
+        if not (uid, self.sequence) in SharedAutoField._created:
+            if connection.introspection.sequence_exists(self.sequence):
+                SharedAutoField._created[(uid, self.sequence)] = True
+            else:
+                SharedAutoField._created[(uid, self.sequence)] = False
+        return SharedAutoField._created[(uid, self.sequence)]
+
+    def set_exists_for_connection(self,connection):
+        """set the field's db sequence as existing *without check*
+        Use with caution"""
+        uid = connection.introspection.get_unique_name()
+        SharedAutoField._created[(uid, self.sequence)] = True
 
     def __init__(self, *args, **kwargs):
         self.sequence = kwargs.pop('sequence', None)
-        if not hasattr(self.__class__, 'uses_pg'):
-            from django.db import connection
-            try:
-                require_pg_django(connection, self.__class__.__name__)
-            except FieldError:
-                self.__class__.uses_pg = False
-                raise
-            else:
-                self.__class__.uses_pg = True
-        if not  self.__class__.uses_pg:
-            raise FieldError("%s is currently implemented only for PostgreSQL/pg_django" % self.__class__.name__)
-
         super(SharedAutoField, self).__init__(*args, **kwargs)
 
     def db_type(self, connection):
@@ -1392,6 +1389,9 @@ class SharedAutoField(AutoField):
         Returns the database column data type for this field, for the provided
         connection.
         """
+        if not getattr(connection.features, 'support_shared_sequence',False):
+            raise FieldError("%s is not implemented for current database backend"
+                             % self.__class__.__name__)
         return "INTEGER DEFAULT nextval('%s')" % self.sequence
 
 

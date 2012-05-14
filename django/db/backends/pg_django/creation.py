@@ -180,12 +180,12 @@ class DatabaseCreation(_DatabaseCreation):
 
             # make the sequence of SharedAutoFields if it does not exist yet
             if isinstance(f, SharedAutoField):
-                if not f.is_created:
+                if not f.exists_for_connection(self.connection):
                     seq = f.sequence
                     final_output.append(style.SQL_KEYWORD(
                         'CREATE SEQUENCE ') +
                         style.SQL_TABLE(qn(seq)) + ';\n')
-                    SharedAutoField._created[seq] = True
+                    f.set_exists_for_connection(self.connection)
 
 
             if not f.null and not matview:

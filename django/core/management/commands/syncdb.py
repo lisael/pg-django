@@ -88,6 +88,8 @@ class Command(NoArgsCommand):
                 # Create the model's database table, if it doesn't already exist.
                 if verbosity >= 3:
                     print "Processing %s.%s model" % (app_name, model._meta.object_name)
+                #if app_name == 'model_materialized_view_inheritance':
+                    #import pdb; pdb.set_trace() ### XXX BREAKPOINT
                 sql, references = connection.creation.sql_create_model(model, self.style, seen_models)
                 seen_models.add(model)
                 created_models.add(model)

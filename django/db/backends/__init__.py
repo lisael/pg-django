@@ -399,6 +399,22 @@ class BaseDatabaseFeatures(object):
     # in the SQL standard.
     supports_tablespaces = False
 
+    support_views = False
+
+    # Rewrite rules are postgres only feature
+    support_rewrite = False
+
+    # right now only pg_django supports this. It's backend specific, not only db.
+    # this feature is used only to skip mat. view base inheritance tests
+    support_materialized_view_base = False
+
+    # Does the database support array types
+    support_arrays = False
+
+    # Does the database support shared sequences. Note: it must implement
+    # get_unique_name and sequence_exists in its DatabaseIntrospection
+    support_shared_sequence = False
+
     # Features that need to be confirmed at runtime
     # Cache whether the confirmation has been performed.
     _confirmed = False
@@ -875,6 +891,16 @@ class BaseDatabaseIntrospection(object):
     def __init__(self, connection):
         self.connection = connection
 
+    def get_unique_name(self):
+        """return a unique db identifier. Required only if the database
+        supports shared sequences"""
+        raise NotImplementedError
+
+    def sequence_exists(self,seq_name):
+        """return True if the sequence already exists in the db. Required
+        only if the database supports shared sequences"""
+        raise NotImplementedError
+
     def get_field_type(self, data_type, description):
         """Hook for a database backend to use the cursor description to
         match a Django field type to a database column.
@@ -890,12 +916,16 @@ class BaseDatabaseIntrospection(object):
         """
         return name
 
-    def table_names(self):
+    def table_names(self, ignore_views=False):
         "Returns a list of names of all tables that exist in the database."
         cursor = self.connection.cursor()
-        return self.get_table_list(cursor)
+        if self.connection.features.support_views:
+            return self.get_table_list(cursor,ignore_views=ignore_views)
+        else:
+            return self.get_table_list(cursor)
 
-    def django_table_names(self, only_existing=False):
+
+    def django_table_names(self, only_existing=False, ignore_views=False):
         """
         Returns a list of all table names that have associated Django models and
         are in INSTALLED_APPS.
@@ -915,7 +945,7 @@ class BaseDatabaseIntrospection(object):
                 tables.update([f.m2m_db_table() for f in model._meta.local_many_to_many])
         tables = list(tables)
         if only_existing:
-            existing_tables = self.table_names()
+            existing_tables = self.table_names(ignore_views=ignore_views)
             tables = [
                 t
                 for t in tables
