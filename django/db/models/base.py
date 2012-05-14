@@ -277,7 +277,7 @@ class ModelBase(type):
         new_class._prepare()
 
         if mat_view:
-            # now I know the table name, I can set the sequence name
+            # now we know the table name, we can set the sequence name
             tname = new_class._meta.db_table
             new_class._meta.pk.sequence = tname + '_id_seq'
 
@@ -297,12 +297,9 @@ class ModelBase(type):
 
             # Now, we override new_class.__new__ on non-concrete intermediate and
             # materialized views to choose the class of the new object returned
-            # when the user (or a QuerySet) tries to instanciate it.
+            # when the user (or a QuerySet) tries to instantiate it.
             # It is chosen amongst leaves
             def new_matview_new(klass,*args,**kwargs):
-                print '#### new ####'
-                print args
-                print kwargs
                 # leaf classes are not patched
                 if not (klass._meta.materialized_view or
                             klass._meta.intermediate):
@@ -310,34 +307,32 @@ class ModelBase(type):
                 if len(kwargs) and klass._meta.concrete:
                     # probably a user instanciation
                     return Model.__new__(klass, *args, **kwargs)
-                parent_fnames = [f.name for f in klass._meta.fields]
+                parent_fnames = [f.column for f in klass._meta.fields]
                 idx = parent_fnames.index('pgd_child_type')
                 if len(args) <= idx and 'pgd_child_type' not in kwargs:
-                    # instancied without a ctype... Yet again a clever user
-                    # anyway, let him go, if he wants to shoot himself
-                    # he won't be able to save a base instances
+                    # I wouldn't do that if I were you. Seems like a smart (or
+                    # crazy) user is trying to do something clever (or foolish)
+                    # and I don't want to refrain one's creativity. This model
+                    # cannot be saved anyway.
                     return Model.__new__(klass,*args,**kwargs)
                 # Here is the magic: if you try to instanciate a m10d view
                 # you get its subbclass corresponding to its pgd_child_type
                 # That how mixed queryset work.
                 # pgd_child_type should be the last field. Just to be sure
-                import pdb; pdb.set_trace() ### XXX BREAKPOINT
-                child = klass._meta.leaf_ids.get(args[idx],None)
+                leaf = klass._meta.leaf_ids.get(args[idx],None)
                 # TODO PG: add an exception here if None
-                print 'found %s' % child
+
                 # hook the __init__ arguments
-                child_fnames = [f.name for f in child._meta.fields]
-                print child_fnames
-                child_args = [None]*len(child_fnames)
+                leaf_fnames = [f.name for f in leaf._meta.fields]
+                leaf_args = [None]*len(leaf_fnames)
                 for i in range(len(parent_fnames)):
                     fname = parent_fnames[i]
-                    if fname in child_fnames:
-                        child_args[child_fnames.index(fname)] = args[i]
-                print child_args
-                inst = Model.__new__(child,*child_args,**kwargs)
+                    if fname in leaf_fnames:
+                        leaf_args[leaf_fnames.index(fname)] = args[i]
+                inst = Model.__new__(leaf,*leaf_args,**kwargs)
                 # The modified arg list is stored on the instance itself.
                 # A hook in __init__ will send it to the original __init__
-                inst.__hooked_args__ = child_args
+                inst.__hooked_args__ = leaf_args
                 return inst
 
             new_matview_new.__patched__ = True
