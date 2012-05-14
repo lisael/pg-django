@@ -7,9 +7,6 @@ from django.test import TestCase, skipIfDBFeature, skipUnlessDBFeature
 
 from datetime import datetime
 
-TEST_SKIP_UNLESS_DB_FEATURES = ['support_arrays',
-                                'support_materialized_view_base']
-
 class ModelMaterializedViewInheritanceTests(TestCase):
     @skipUnlessDBFeature('support_materialized_view_base')
     def test_single_level_inheritance(self):

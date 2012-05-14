@@ -107,13 +107,10 @@ def skip_app(app_module):
                               [])
     if req_db_features:
         from django.db import connections
-
-        import pdb; pdb.set_trace() ### XXX BREAKPOINT
         for c in connections:
             connection = connections[c]
             for feature in req_db_features:
                 if not getattr(connection.features, feature, False):
-                    print 'has not %s' % feature
                     return True
 
     forbidden_db_features = getattr(app_module, 'TEST_SKIP_IF_DB_FEATURES',
@@ -124,7 +121,6 @@ def skip_app(app_module):
             connection = connections[c]
             for feature in forbidden_db_features:
                 if getattr(connection.features, feature, False):
-                    print 'has %s' % feature
                     return True
     return False
 
@@ -419,8 +415,6 @@ class DjangoTestSuiteRunner(object):
             if skip_app(app):
                 unregister_app(app.__name__.split('.')[-2])
                 settings.INSTALLED_APPS.remove(app.__name__)
-        import pdb; pdb.set_trace() ### XXX BREAKPOINT
-
         old_config = self.setup_databases()
         result = self.run_suite(suite)
         self.teardown_databases(old_config)
