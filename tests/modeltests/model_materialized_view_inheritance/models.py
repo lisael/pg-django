@@ -1,6 +1,8 @@
 from django.db import models
 from django.db.models.fields import CharArrayField
 
+TEST_SKIP_UNLESS_DB_FEATURES = ['support_arrays',
+                                'support_materialized_view_base']
 
 class DocumentBase(models.Model):
     """A materialized base class. In database, this creates a view

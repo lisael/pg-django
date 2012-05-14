@@ -251,6 +251,16 @@ class AppCache(object):
             model_dict[model_name] = model
         self._get_models_cache.clear()
 
+    def unregister_app(self,app_label):
+        """removes an app and all its models from the cache"""
+        if app_label in self.app_models:
+            del self.app_models[app_label]
+            app_module = self.app_labels.pop(app_label)
+            del self.app_store[app_module]
+            if app_label in self.app_errors:
+                del self.app_errors[app_label]
+            self._get_models_cache.clear()
+
 cache = AppCache()
 
 # These methods were always module level, so are kept that way for backwards
@@ -261,5 +271,6 @@ get_app_errors = cache.get_app_errors
 get_models = cache.get_models
 get_model = cache.get_model
 register_models = cache.register_models
+unregister_app = cache.unregister_app
 load_app = cache.load_app
 app_cache_ready = cache.app_cache_ready

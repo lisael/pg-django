@@ -3,6 +3,7 @@ import unittest as real_unittest
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models import get_app, get_apps
+from django.db.models.loading import unregister_app
 from django.test import _doctest as doctest
 from django.test.utils import setup_test_environment, teardown_test_environment
 from django.test.testcases import OutputChecker, DocTestRunner, TestCase
@@ -59,6 +60,10 @@ def build_suite(app_module):
     """
     suite = unittest.TestSuite()
 
+    if skip_app(app_module):
+        unregister_app(app_module.__name__.split('.')[-2])
+        settings.INSTALLED_APPS.remove('.'.join(app_module.__name__.split('.')[:-1]))
+        return suite
     # Load unit and doctests in the models.py module. If module has
     # a suite() method, use it. Otherwise build the test suite ourselves.
     if hasattr(app_module, 'suite'):
@@ -95,6 +100,34 @@ def build_suite(app_module):
     return suite
 
 
+def skip_app(app_module):
+    """return True if the app must be skipped acccording to its
+    TEST_SKIP_UNLESS_DB_FEATURES and TEST_IF_DB_FEATURE attributes"""
+    req_db_features = getattr(app_module, 'TEST_SKIP_UNLESS_DB_FEATURES',
+                              [])
+    if req_db_features:
+        from django.db import connections
+
+        import pdb; pdb.set_trace() ### XXX BREAKPOINT
+        for c in connections:
+            connection = connections[c]
+            for feature in req_db_features:
+                if not getattr(connection.features, feature, False):
+                    print 'has not %s' % feature
+                    return True
+
+    forbidden_db_features = getattr(app_module, 'TEST_SKIP_IF_DB_FEATURES',
+                              [])
+    if forbidden_db_features:
+        from django.db import connections
+        for c in connections:
+            connection = connections[c]
+            for feature in forbidden_db_features:
+                if getattr(connection.features, feature, False):
+                    print 'has %s' % feature
+                    return True
+    return False
+
 def build_test(label):
     """
     Construct a test case with the specified label. Label should be of the
@@ -111,6 +144,10 @@ def build_test(label):
     # First, look for TestCase instances with a name that matches
     #
     app_module = get_app(parts[0])
+    if skip_app(app_module):
+        unregister_app(app_module.__name__.split('.')[-2])
+        settings.INSTALLED_APPS.remove('.'.join(app_module.__name__.split('.')[:-1]))
+        return unittest.TestSuite()
     test_module = get_tests(app_module)
     TestClass = getattr(app_module, parts[1], None)
 
@@ -378,6 +415,12 @@ class DjangoTestSuiteRunner(object):
         """
         self.setup_test_environment()
         suite = self.build_suite(test_labels, extra_tests)
+        for app in get_apps():
+            if skip_app(app):
+                unregister_app(app.__name__.split('.')[-2])
+                settings.INSTALLED_APPS.remove(app.__name__)
+        import pdb; pdb.set_trace() ### XXX BREAKPOINT
+
         old_config = self.setup_databases()
         result = self.run_suite(suite)
         self.teardown_databases(old_config)
