@@ -311,8 +311,6 @@ class DatabaseCreation(_DatabaseCreation):
             full_view_statement += style.SQL_FIELD(qn('pgd_child_type')) + ' '
             full_view_statement += style.SQL_KEYWORD('IN') + ' ('
             leaf_ids = model._meta.leaf_ids.keys()
-            if concrete:
-                leaf_ids.append(model._meta.leaf_id)
             full_view_statement += ', '.join(str(l) for l in leaf_ids) + ')\n;'
 
             final_output.append(full_view_statement)
