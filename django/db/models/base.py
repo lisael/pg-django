@@ -61,16 +61,6 @@ class ModelBase(type):
 
         new_class.add_to_class('_meta', Options(meta, **kwargs))
 
-        if base_meta:
-            if base_meta.abstract:
-                # Non-abstract child classes inherit some attributes from their
-                # non-abstract parent (unless an ABC comes before it in the
-                # method resolution order).
-                if not hasattr(meta, 'ordering'):
-                    new_class._meta.ordering = base_meta.ordering
-                if not hasattr(meta, 'get_latest_by'):
-                    new_class._meta.get_latest_by = base_meta.get_latest_by
-
         if not abstract:
             new_class.add_to_class('DoesNotExist', subclass_exception('DoesNotExist',
                     tuple(x.DoesNotExist
@@ -81,6 +71,14 @@ class ModelBase(type):
                             for x in parents if hasattr(x, '_meta') and not x._meta.abstract)
                                     or (MultipleObjectsReturned,), module))
             if base_meta:
+                if not base_meta.abstract:
+                    # Non-abstract child classes inherit some attributes from their
+                    # non-abstract parent (unless an ABC comes before it in the
+                    # method resolution order).
+                    if not hasattr(meta, 'ordering'):
+                        new_class._meta.ordering = base_meta.ordering
+                    if not hasattr(meta, 'get_latest_by'):
+                        new_class._meta.get_latest_by = base_meta.get_latest_by
                 if base_meta.materialized_view or base_meta.leaf or (
                         base_meta.db_view and base_meta.intermediate):
                     if mat_view :
