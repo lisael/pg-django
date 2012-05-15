@@ -1,3 +1,6 @@
+Pg-django
+=========
+
 Pg-django is a fork of `Django <https://www.djangoproject.com/>`_ that uses
 `PostgreSQL <http://www.postgresql.org/>`_ as database backend.
 
