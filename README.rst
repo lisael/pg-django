@@ -88,7 +88,8 @@ Who are we?
 ===========
 
 We? wadaya mean "we"? We is a single unemployed python/django web developer who
-found an exiting way to spend his time, to explore and to torture Django internals.
+found an exciting way to spend his time, to explore and to torture Django
+internals.
 
 Misc and random thought
 =======================
