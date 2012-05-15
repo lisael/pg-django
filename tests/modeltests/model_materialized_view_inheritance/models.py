@@ -4,6 +4,15 @@ from django.db.models.fields import CharArrayField
 TEST_SKIP_UNLESS_DB_FEATURES = ['support_arrays',
                                 'support_materialized_view_base']
 
+# Doesn't work yet see #9
+#class AbstractDocumentBase(models.Model):
+    #"""A dumb abstract class, just to see..."""
+    #title = models.CharField(max_length=200, db_index = True)
+
+    #def dance_for_me_baby(self):
+        #return 'OK, anyway, I\'m abstract'
+
+
 class DocumentBase(models.Model):
     """A materialized base class. In database, this creates a view
     and a materialized view table containing all fields of all leaf
@@ -49,6 +58,13 @@ class FileDocument(TaggedDocument):
     """
     path = models.CharField(max_length=1000)
 
+    def dance_for_me(self):
+        return 'S**k my left one, honey, I\'m real, now'
+
+
+class OtherTaggedStuff(TaggedDocument):
+    '''just like FileDocument'''
+    spam = models.CharField(max_length=50)
 
 class TextDocument(TaggedDocument):
     """A concrete intermediate view ( a concrete branch in the inheritance

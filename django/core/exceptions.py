@@ -37,6 +37,11 @@ class FieldError(Exception):
     """Some kind of problem with a model field."""
     pass
 
+class NonPersistantModel(Exception):
+    """The user tried to save or delete a materialized base or an
+    abstract intermediate view"""
+    pass
+
 NON_FIELD_ERRORS = '__all__'
 class ValidationError(Exception):
     """An error while validating data."""

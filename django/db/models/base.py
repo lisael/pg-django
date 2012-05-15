@@ -6,7 +6,8 @@ from itertools import izip
 import django.db.models.manager     # Imported to register signal handler.
 from django.conf import settings
 from django.core.exceptions import (ObjectDoesNotExist,
-    MultipleObjectsReturned, FieldError, ValidationError, NON_FIELD_ERRORS)
+    MultipleObjectsReturned, FieldError, ValidationError,
+    NonPersistantModel, NON_FIELD_ERRORS)
 from django.core import validators
 from django.db.models.fields import AutoField, IntegerField, FieldDoesNotExist
 from django.db.models.fields.related import (ManyToOneRel,
@@ -611,8 +612,7 @@ class Model(object):
         if (self.__class__._meta.materialized_view or
                     (self.__class__._meta.intermediate and not
                      self.__class__._meta.concrete)):
-            # TODO PG: specialized exception
-            raise Exception('Materialized views and intermediate views can\'t be'\
+            raise NonPersistantModel('Materialized views and intermediate views can\'t be'\
                             'saved or deleted')
 
         self.save_base(using=using, force_insert=force_insert, force_update=force_update)
@@ -726,8 +726,7 @@ class Model(object):
         if (self.__class__._meta.materialized_view or
                     (self.__class__._meta.intermediate and not
                      self.__class__._meta.concrete)):
-            # TODO PG: specialized exception
-            raise Exception('Materialized views and intermediate views can\'t be'\
+            raise NonPersistantModel('Materialized views and intermediate views can\'t be'\
                             'saved or deleted')
         using = using or router.db_for_write(self.__class__, instance=self)
         assert self._get_pk_val() is not None, "%s object can't be deleted because its %s attribute is set to None." % (self._meta.object_name, self._meta.pk.attname)
