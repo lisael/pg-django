@@ -18,6 +18,7 @@ from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 from django.utils.encoding import smart_unicode, force_unicode, smart_str
 from django.utils.ipv6 import clean_ipv6_address
+from django.db.models.fields.subclassing import SubfieldBase
 
 class NOT_PROVIDED:
     pass
@@ -27,8 +28,10 @@ class NOT_PROVIDED:
 BLANK_CHOICE_DASH = [("", "---------")]
 BLANK_CHOICE_NONE = [("", "None")]
 
+
 class FieldDoesNotExist(Exception):
     pass
+
 
 # A guide to Field parameters:
 #
@@ -509,6 +512,7 @@ class Field(object):
             return '<%s: %s>' % (path, name)
         return '<%s>' % path
 
+
 class AutoField(Field):
     description = _("Integer")
 
@@ -552,6 +556,43 @@ class AutoField(Field):
 
     def formfield(self, **kwargs):
         return None
+
+
+class SharedAutoField(AutoField):
+    """A sequence shared amongst several tables"""
+    # a cache of sequences already existing in the db
+    _created = {}
+
+    def exists_for_connection(self,connection):
+        uid = connection.introspection.get_unique_name()
+        if not (uid, self.sequence) in SharedAutoField._created:
+            if connection.introspection.sequence_exists(self.sequence):
+                SharedAutoField._created[(uid, self.sequence)] = True
+            else:
+                SharedAutoField._created[(uid, self.sequence)] = False
+        return SharedAutoField._created[(uid, self.sequence)]
+
+    def set_exists_for_connection(self,connection):
+        """set the field's db sequence as existing *without check*
+        Use with caution"""
+        uid = connection.introspection.get_unique_name()
+        SharedAutoField._created[(uid, self.sequence)] = True
+
+    def __init__(self, *args, **kwargs):
+        self.sequence = kwargs.pop('sequence', None)
+        super(SharedAutoField, self).__init__(*args, **kwargs)
+
+    def db_type(self, connection):
+        """
+        Returns the database column data type for this field, for the provided
+        connection.
+        """
+        if not getattr(connection.features, 'support_shared_sequence',False):
+            raise exceptions.FieldError(
+                "%s is not implemented for current database backend."
+                % self.__class__.__name__)
+        return connection.ops.get_sql_for_shared_sequence(self)
+
 
 class BooleanField(Field):
     empty_strings_allowed = False
@@ -608,6 +649,7 @@ class BooleanField(Field):
         defaults.update(kwargs)
         return super(BooleanField, self).formfield(**defaults)
 
+
 class CharField(Field):
     description = _("String (up to %(max_length)s)")
 
@@ -634,6 +676,7 @@ class CharField(Field):
         defaults.update(kwargs)
         return super(CharField, self).formfield(**defaults)
 
+
 # TODO: Maybe move this into contrib, because it's specialized.
 class CommaSeparatedIntegerField(CharField):
     default_validators = [validators.validate_comma_separated_integer_list]
@@ -647,6 +690,7 @@ class CommaSeparatedIntegerField(CharField):
         }
         defaults.update(kwargs)
         return super(CommaSeparatedIntegerField, self).formfield(**defaults)
+
 
 class DateField(Field):
     empty_strings_allowed = False
@@ -732,6 +776,7 @@ class DateField(Field):
         defaults = {'form_class': forms.DateField}
         defaults.update(kwargs)
         return super(DateField, self).formfield(**defaults)
+
 
 class DateTimeField(DateField):
     empty_strings_allowed = False
@@ -832,6 +877,7 @@ class DateTimeField(DateField):
         defaults.update(kwargs)
         return super(DateTimeField, self).formfield(**defaults)
 
+
 class DecimalField(Field):
     empty_strings_allowed = False
     default_error_messages = {
@@ -892,6 +938,7 @@ class DecimalField(Field):
         defaults.update(kwargs)
         return super(DecimalField, self).formfield(**defaults)
 
+
 class EmailField(CharField):
     default_validators = [validators.validate_email]
     description = _("E-mail address")
@@ -908,6 +955,7 @@ class EmailField(CharField):
         }
         defaults.update(kwargs)
         return super(EmailField, self).formfield(**defaults)
+
 
 class FilePathField(Field):
     description = _("File path")
@@ -930,6 +978,7 @@ class FilePathField(Field):
 
     def get_internal_type(self):
         return "FilePathField"
+
 
 class FloatField(Field):
     empty_strings_allowed = False
@@ -959,6 +1008,7 @@ class FloatField(Field):
         defaults = {'form_class': forms.FloatField}
         defaults.update(kwargs)
         return super(FloatField, self).formfield(**defaults)
+
 
 class IntegerField(Field):
     empty_strings_allowed = False
@@ -995,6 +1045,7 @@ class IntegerField(Field):
         defaults.update(kwargs)
         return super(IntegerField, self).formfield(**defaults)
 
+
 class BigIntegerField(IntegerField):
     empty_strings_allowed = False
     description = _("Big (8 byte) integer")
@@ -1008,6 +1059,7 @@ class BigIntegerField(IntegerField):
                     'max_value': BigIntegerField.MAX_BIGINT}
         defaults.update(kwargs)
         return super(BigIntegerField, self).formfield(**defaults)
+
 
 class IPAddressField(Field):
     empty_strings_allowed = False
@@ -1024,6 +1076,7 @@ class IPAddressField(Field):
         defaults = {'form_class': forms.IPAddressField}
         defaults.update(kwargs)
         return super(IPAddressField, self).formfield(**defaults)
+
 
 class GenericIPAddressField(Field):
     empty_strings_allowed = True
@@ -1119,6 +1172,7 @@ class NullBooleanField(Field):
         defaults.update(kwargs)
         return super(NullBooleanField, self).formfield(**defaults)
 
+
 class PositiveIntegerField(IntegerField):
     description = _("Positive integer")
 
@@ -1130,6 +1184,7 @@ class PositiveIntegerField(IntegerField):
         defaults.update(kwargs)
         return super(PositiveIntegerField, self).formfield(**defaults)
 
+
 class PositiveSmallIntegerField(IntegerField):
     description = _("Positive small integer")
 
@@ -1140,6 +1195,7 @@ class PositiveSmallIntegerField(IntegerField):
         defaults = {'min_value': 0}
         defaults.update(kwargs)
         return super(PositiveSmallIntegerField, self).formfield(**defaults)
+
 
 class SlugField(CharField):
     description = _("Slug (up to %(max_length)s)")
@@ -1159,11 +1215,13 @@ class SlugField(CharField):
         defaults.update(kwargs)
         return super(SlugField, self).formfield(**defaults)
 
+
 class SmallIntegerField(IntegerField):
     description = _("Small integer")
 
     def get_internal_type(self):
         return "SmallIntegerField"
+
 
 class TextField(Field):
     description = _("Text")
@@ -1180,6 +1238,7 @@ class TextField(Field):
         defaults = {'widget': forms.Textarea}
         defaults.update(kwargs)
         return super(TextField, self).formfield(**defaults)
+
 
 class TimeField(Field):
     empty_strings_allowed = False
@@ -1252,6 +1311,7 @@ class TimeField(Field):
         defaults.update(kwargs)
         return super(TimeField, self).formfield(**defaults)
 
+
 class URLField(CharField):
     description = _("URL")
 
@@ -1270,18 +1330,6 @@ class URLField(CharField):
         }
         defaults.update(kwargs)
         return super(URLField, self).formfield(**defaults)
-
-################# pg-django stuff ###########################
-
-
-from django.core.exceptions import FieldError, ValidationError
-from django.db.models.fields.subclassing import SubfieldBase
-
-
-def require_pg_django(connection, field_type=''):
-    engine = connection.settings_dict['ENGINE']
-    if 'pg_django' not in engine:
-        raise FieldError("%s is currently implemented only for PostgreSQL/pg_django" % field_type)
 
 
 class ArrayFieldBase(object):
@@ -1308,8 +1356,9 @@ class ArrayFieldBase(object):
 
     def db_type(self, connection):
         if not getattr(connection.features, 'support_arrays',False):
-            raise FieldError("%s is not implemented for current database backend"
-                             % self.__class__.__name__)
+            raise exceptions.FieldError(
+                "%s is not implemented for current database backend"
+                % self.__class__.__name__)
         return super(ArrayFieldBase, self).db_type(connection=connection) + '[]'
 
     def to_python(self, value):
@@ -1321,7 +1370,8 @@ class ArrayFieldBase(object):
             try:
                 iter(value)
             except TypeError:
-                raise ValidationError("An ArrayField value must be None or an iterable.")
+                raise exceptions.ValidationError(
+                    "An ArrayField value must be None or an iterable.")
         return self.itertype([self.fieldtype.to_python(self.subinstance, x) for x in value])
 
     def get_prep_value(self, value):
@@ -1341,7 +1391,7 @@ class ArrayFieldMetaclass(SubfieldBase):
     pass
 
 
-def array_field_factory(name, fieldtype, module=ArrayFieldBase.__module__):
+def _array_field_factory(name, fieldtype, module=ArrayFieldBase.__module__):
     return ArrayFieldMetaclass(name, (ArrayFieldBase, fieldtype),
         {'__module__': module,
         'description': "An array, where each element is of the same type "\
@@ -1356,42 +1406,7 @@ def array_field_factory(name, fieldtype, module=ArrayFieldBase.__module__):
 
 #IntegerArrayField = array_field_factory('IntegerArrayField', models.IntegerField)
 #FloatArrayField = array_field_factory('FloatArrayField', models.FloatField)
-CharArrayField = array_field_factory('CharArrayField', CharField)
-TextArrayField = array_field_factory('TextArrayField', TextField)
-
-
-class SharedAutoField(AutoField):
-    """A sequence shared amongst several tables"""
-    # a cache of sequences already existing in the db
-    _created = {}
-
-    def exists_for_connection(self,connection):
-        uid = connection.introspection.get_unique_name()
-        if not (uid, self.sequence) in SharedAutoField._created:
-            if connection.introspection.sequence_exists(self.sequence):
-                SharedAutoField._created[(uid, self.sequence)] = True
-            else:
-                SharedAutoField._created[(uid, self.sequence)] = False
-        return SharedAutoField._created[(uid, self.sequence)]
-
-    def set_exists_for_connection(self,connection):
-        """set the field's db sequence as existing *without check*
-        Use with caution"""
-        uid = connection.introspection.get_unique_name()
-        SharedAutoField._created[(uid, self.sequence)] = True
-
-    def __init__(self, *args, **kwargs):
-        self.sequence = kwargs.pop('sequence', None)
-        super(SharedAutoField, self).__init__(*args, **kwargs)
-
-    def db_type(self, connection):
-        """
-        Returns the database column data type for this field, for the provided
-        connection.
-        """
-        if not getattr(connection.features, 'support_shared_sequence',False):
-            raise FieldError("%s is not implemented for current database backend"
-                             % self.__class__.__name__)
-        return "INTEGER DEFAULT nextval('%s')" % self.sequence
+CharArrayField = _array_field_factory('CharArrayField', CharField)
+TextArrayField = _array_field_factory('TextArrayField', TextField)
 
 

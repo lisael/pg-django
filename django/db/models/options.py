@@ -5,7 +5,8 @@ from django.conf import settings
 from django.db.models.related import RelatedObject
 from django.db.models.fields.related import ManyToManyRel
 from django.db.models.fields import (AutoField, SharedAutoField,
-                                     FieldDoesNotExist, FieldError)
+                                     FieldDoesNotExist)
+from django.core.exceptions import FieldError
 from django.db.models.fields.proxy import OrderWrt
 from django.db.models.loading import get_models, app_cache_ready
 from django.utils.translation import activate, deactivate_all, get_language, string_concat
