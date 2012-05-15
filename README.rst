@@ -4,15 +4,15 @@ Pg-django
 Pg-django is a fork of `Django <https://www.djangoproject.com/>`_ that uses
 `PostgreSQL <http://www.postgresql.org/>`_ as database backend.
 
-It does not break Django's database agnosticity, but it provides postgres-only
-new features. As such it aims to be a drop-in replacemant of Django, and
+It does not break Django's database agnosticism, but it provides postgres-only
+new features. As such it aims to be a drop-in replacement of Django, and
 a particular attention is ported at not breaking django features and APIs.
 
 Features
 ========
 
 All Django features and APIs. Pg-django is based on Django 1.4 code and it must
-respect django feature. To ensure this, we run django tests on our code every
+respect django features. To ensure this, we run django tests on our code every
 days (or such), and no official release is possible if the tests fail.
 
 This is not enough! But we can't do more... Maybe some bugs may appear at 
@@ -62,15 +62,15 @@ our code modifications under the term of Django's original BSD license.
 Web site
 ========
 
-The project is self-hosted at `http://trac.lisael.org/pg-django`_
+The project is self-hosted at `<http://trac.lisael.org/pg-django>`_
 
 Note that the project's Github page is not the reference. As such, the github
-repo mirrors the only official repo: `git://git.lisael.org/git/pg-django`_
+repo mirrors the only official repo: `<git://git.lisael.org/git/pg-django>`_
 
 Contributions
 =============
 
-Contributions are accepted if posted as a patch on a relevent ticket on `our
+Contributions are accepted if posted as a patch on a relevant ticket on `our
 trac <http://trac.lisael.org/pg-django>`_. If your improvement idea fits no
 existing ticket, please submit a new ticket before you start implementing it,
 so we can discuss about it.
@@ -82,12 +82,12 @@ By "related" I mean that these projects give similar features and that may be
 sources of inspiration for Pg-django code. We may or may not have other types
 of relation, this is not the point here.
 
-    - http://readthedocs.org/docs/django-orm/en/latest/index.html
+    - `<http://readthedocs.org/docs/django-orm/en/latest/index.html>`_
 
 Who are we?
 ===========
 
-We? wadaya mean "we"? We is a single unumployed python/django web developper who
+We? wadaya mean "we"? We is a single unemployed python/django web developer who
 found an exiting way to spend his time, to explore and to torture Django internals.
 
 Misc and random thought
@@ -98,7 +98,7 @@ Most of pg-django features are actually portable to most django database backend
 relies on PostgreSQL RULES, and I have no idea how to port this implementation
 detail...). Though we don't have time and motivation to port ourselves, we accept
 any contribution in this direction. If a feature becomes fully DB agnostic, it
-is a good condidate to be backported in Django, and that's good for us.
+is a good candidate to be backported in Django, and that's good for us.
 
 We do aim to merge most of our code in Django tree, when possible. That's why
 we need to keep full backward compatibility with django, and we must test our
