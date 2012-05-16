@@ -1366,7 +1366,7 @@ class ArrayFieldBase(object):
         # or deserialize
         if value is None:
             return None
-        if not isinstance(value, (list, tuple, set)):
+        if not isinstance(value, (list, tuple, set, self.itertype)):
             try:
                 iter(value)
             except TypeError:
@@ -1379,13 +1379,29 @@ class ArrayFieldBase(object):
             return None
         return [self.fieldtype.get_prep_value(self.subinstance, v) for v in value]
 
+    #def get_db_prep_save(self,value,connection):
+        #if isinstance(value, (list, tuple, set, self.itertype)):
+            #return 'ARRAY[%s]::%s' % (', '.join(self.fieldtype.get_db_prep_value(
+                #self.subinstance, v, connection) for v in value),
+                #self.db_type(connection))
+        #return self.fieldtype.get_db_prep_save(self.subinstance, value, connection)
+
+    def get_db_prep_save(self,value,connection):
+        if isinstance(value, (list, tuple, set, self.itertype)):
+            return [self.fieldtype.get_db_prep_save(self.subinstance, v,
+                                               connection) for v in value]
+        return self.fieldtype.get_db_prep_save(self.subinstance, value, connection)
+
+
+    def get_default(self):
+        return self.itertype()
+
     def run_validators(self, value):
         if value is None:
             super(ArrayFieldBase, self).run_validators(value)
         else:
             for v in value:
                 super(ArrayFieldBase, self).run_validators(v)
-
 
 class ArrayFieldMetaclass(SubfieldBase):
     pass
@@ -1404,9 +1420,26 @@ def _array_field_factory(name, fieldtype, module=ArrayFieldBase.__module__):
 # class FooArrayField(dbarray.ArrayFieldBase, FooField):
 #     __metaclass__ = dbarray.ArrayFieldMetaclass
 
-#IntegerArrayField = array_field_factory('IntegerArrayField', models.IntegerField)
-#FloatArrayField = array_field_factory('FloatArrayField', models.FloatField)
+
+BooleanArrayField = _array_field_factory('BooleanArrayField', BooleanField)
 CharArrayField = _array_field_factory('CharArrayField', CharField)
+#DateArrayField = _array_field_factory('DateArrayField', DateField)
+#DateTimeArrayField = _array_field_factory('DateTimeArrayField', DateTimeField)
+#DecimalArrayField = _array_field_factory('DecimalArrayField', DecimalField)
+EmailArrayField = _array_field_factory('EmailArrayField', EmailField)
+FilePathArrayField = _array_field_factory('FilePathArrayField', FilePathField)
+FloatArrayField = _array_field_factory('FloatArrayField', FloatField)
+IntegerArrayField = _array_field_factory('IntegerArrayField', IntegerField)
+BigIntegerArrayField = _array_field_factory('BigIntegerArrayField', BigIntegerField)
+#IPAddressArrayField = _array_field_factory('IPAddressArrayField', IPAddressField)
+#GenericIPAddressArrayField = _array_field_factory('GenericIPAddressArrayField', GenericIPAddressField)
+NullBooleanArrayField = _array_field_factory('NullBooleanArrayField', NullBooleanField)
+#PositiveIntegerArrayField = _array_field_factory('PositiveIntegerArrayField', PositiveIntegerField)
+#PositiveSmallIntegerArrayField = _array_field_factory('PositiveSmallIntegerArrayField', PositiveSmallIntegerField)
+SlugArrayField = _array_field_factory('SlugArrayField', SlugField)
+SmallIntegerArrayField = _array_field_factory('SmallIntegerArrayField', SmallIntegerField)
 TextArrayField = _array_field_factory('TextArrayField', TextField)
+#TimeArrayField = _array_field_factory('TimeArrayField', TimeField)
+URLArrayField = _array_field_factory('URLArrayField', URLField)
 
 
