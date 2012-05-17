@@ -20,16 +20,18 @@ When the root or a branch is queried, the resulting queryset is said
 
 from __future__ import absolute_import
 
-from django.core.exceptions import FieldError, NonPersistantModel
+from django.core.exceptions import NonPersistantModel
 from django.test import TestCase, skipUnlessDBFeature
 
 from datetime import datetime
+
+from .models import (DocumentBase, TaggedDocument, News, FileDocument,
+            Referer, Comment, OtherTaggedStuff, TextDocument, RatedTextDocument)
 
 class ModelMaterializedViewInheritanceTests(TestCase):
     @skipUnlessDBFeature('support_materialized_view_base')
     def test_single_level_inheritance(self):
         # Imports must be skipped either
-        from .models import DocumentBase, Comment, News
         c1 = Comment(title='a comment',
                      summary='a comment summary',
                      text='this is a comment',
@@ -49,8 +51,6 @@ class ModelMaterializedViewInheritanceTests(TestCase):
 
     @skipUnlessDBFeature('support_materialized_view_base')
     def test_abstract_intemediate_views(self):
-        from .models import (DocumentBase, TaggedDocument, FileDocument,
-                         Comment, OtherTaggedStuff)
         fd1 = FileDocument(
             title="a file",
             summary="this is a file",
@@ -86,8 +86,6 @@ class ModelMaterializedViewInheritanceTests(TestCase):
 
     @skipUnlessDBFeature('support_materialized_view_base')
     def test_concrete_intemediate_views(self):
-        from .models import (DocumentBase, TaggedDocument, FileDocument,
-                Comment, OtherTaggedStuff, TextDocument, RatedTextDocument)
         # it is a branch, but it may also be saved...
         # that's why there is no assertRaise i this test
         td1 = TextDocument(
@@ -119,6 +117,54 @@ class ModelMaterializedViewInheritanceTests(TestCase):
         self.assertEqual(len(dbs),2)
         self.assertIn("TextDocument a text", dbs)
         self.assertIn("RatedTextDocument rate me", dbs)
+
+
+    def test_leaf_foreign_key(self):
+        rtd = RatedTextDocument(title="rate me")
+        rtd.save()
+        ref = Referer(leaf=rtd)
+        ref.save()
+        id_ = ref.pk
+        ref = Referer.objects.get(pk=id_)
+        self.assertEqual(ref.leaf.title, 'rate me')
+
+    def test_root_foreign_key(self):
+        rtd = RatedTextDocument(title="rate me")
+        rtd.save()
+        ref = Referer(root=rtd)
+        ref.save()
+        id_ = ref.pk
+        ref = Referer.objects.get(pk=id_)
+        self.assertEqual(ref.root.title, 'rate me')
+
+    # see #18
+    #def test_abstract_branch_foreign_key(self):
+        #rtd = RatedTextDocument(title="rate me")
+        #rtd.save()
+        #ref = Referer(abranch=rtd)
+        #ref.save()
+        #id_ = ref.pk
+        #ref = Referer.objects.get(pk=id_)
+        #self.assertEqual(ref.abranch.title, 'rate me')
+
+    # see #18
+    #def test_concrete_branch_foreign_key(self):
+        #rtd = RatedTextDocument(title="rate me")
+        #rtd.save()
+        #ref = Referer(cbranch=rtd)
+        #ref.save()
+        #id_ = ref.pk
+        #ref = Referer.objects.get(pk=id_)
+        #self.assertEqual(ref.cbranch.title, 'rate me')
+
+        ## Test if the concrete object itself can be referenced
+        #td = TextDocument(title="a text")
+        #td.save
+        #ref = Referer(cbranch=td)
+        #ref.save()
+        #id_ = ref.pk
+        #ref = Referer.objects.get(pk=id_)
+        #self.assertEqual(ref.cbranch.title, 'a text')
 
 
 

@@ -88,7 +88,7 @@ class TextDocument(TaggedDocument):
 class RatedTextDocument(TextDocument):
     """Another leaf. This one has a non-concrete and a concrete intermediate
     view"""
-    rate = models.IntegerField()
+    rate = models.IntegerField(null = True)
 
 
 class Comment(DocumentBase):
@@ -100,5 +100,15 @@ class Comment(DocumentBase):
 class News(DocumentBase):
     """Yet another leaf. This one is a direct leaf (no intermediate view)"""
     date = models.DateTimeField()
+
+
+class Referer(models.Model):
+    """Test foreign keys on root, branch and leaves"""
+    leaf = models.ForeignKey(RatedTextDocument, null=True)
+    root = models.ForeignKey(DocumentBase, null=True)
+    # see #18
+    #abranch = models.ForeignKey(TaggedDocument, null=True)
+    #cbranch = models.ForeignKey(TextDocument, null=True)
+
 
 
